@@ -13,19 +13,21 @@ use harbor_engine::engine::REPORT_EVERY as WINDOW;
 
 /// The share of real time the engine may spend emulating before the system is asked for more.
 #[cfg(target_os = "android")]
-const TARGET_LOAD_FG: f64 = 0.6;
+const TARGET_LOAD_FG: f64 = 0.45;
 /// Tighter target in the background so Android keeps the engine off throttled little cores.
 #[cfg(target_os = "android")]
-const TARGET_LOAD_BG: f64 = 0.4;
+const TARGET_LOAD_BG: f64 = 0.35;
 
 #[cfg(target_os = "android")]
 mod sys {
-    use std::ffi::{c_void, CStr};
+    use std::ffi::{c_char, c_void, CStr};
 
     pub type GetManager = unsafe extern "C" fn() -> *mut c_void;
     pub type CreateSession = unsafe extern "C" fn(*mut c_void, *const i32, usize, i64) -> *mut c_void;
     pub type Report = unsafe extern "C" fn(*mut c_void, i64) -> i32;
     pub type UpdateTarget = unsafe extern "C" fn(*mut c_void, i64) -> i32;
+    pub type SetPreferPowerEfficiency = unsafe extern "C" fn(*mut c_void, bool) -> i32;
+    pub type NotifyWorkloadIncrease = unsafe extern "C" fn(*mut c_void, bool, bool, *const c_char) -> i32;
     pub type Close = unsafe extern "C" fn(*mut c_void);
 
     pub struct Api {
@@ -33,6 +35,8 @@ mod sys {
         pub create: CreateSession,
         pub report: Report,
         pub update_target: Option<UpdateTarget>,
+        pub set_prefer_power_efficiency: Option<SetPreferPowerEfficiency>,
+        pub notify_workload_increase: Option<NotifyWorkloadIncrease>,
         pub close: Close,
     }
 
@@ -54,6 +58,8 @@ mod sys {
                 create: sym(lib, c"APerformanceHint_createSession")?,
                 report: sym(lib, c"APerformanceHint_reportActualWorkDuration")?,
                 update_target: sym(lib, c"APerformanceHint_updateTargetWorkDuration"),
+                set_prefer_power_efficiency: sym(lib, c"APerformanceHint_setPreferPowerEfficiency"),
+                notify_workload_increase: sym(lib, c"APerformanceHint_notifyWorkloadIncrease"),
                 close: sym(lib, c"APerformanceHint_closeSession")?,
             })
         }
@@ -68,6 +74,8 @@ pub struct Hint {
     session: *mut std::ffi::c_void,
     #[cfg(target_os = "android")]
     background: bool,
+    #[cfg(target_os = "android")]
+    last_boost: std::time::Instant,
 }
 
 impl Hint {
@@ -88,8 +96,11 @@ impl Hint {
                     log::warn!("engine thread: no performance hint session");
                     return None;
                 }
+                if let Some(set_eff) = api.set_prefer_power_efficiency {
+                    let _ = set_eff(session, false);
+                }
                 log::info!("engine thread: performance hint session, target {} us per {} ms", target / 1000, WINDOW.as_millis());
-                Some(Hint { api, session, background: false })
+                Some(Hint { api, session, background: false, last_boost: std::time::Instant::now() })
             }
         }
         #[cfg(not(target_os = "android"))]
@@ -114,6 +125,13 @@ impl Hint {
             }
             // scaled to exactly one window, so the target stays fixed
             let actual = busy.as_nanos() as f64 * WINDOW.as_nanos() as f64 / audio.as_nanos() as f64;
+            if actual > WINDOW.as_nanos() as f64 * 0.85 && self.last_boost.elapsed() >= Duration::from_secs(1) {
+                self.last_boost = std::time::Instant::now();
+                if let Some(notify) = self.api.notify_workload_increase {
+                    // SAFETY: session is live until drop and debug name is static NUL-terminated.
+                    unsafe { let _ = notify(self.session, true, false, c"harbor-engine".as_ptr()); }
+                }
+            }
             // SAFETY: the session is live until drop.
             unsafe { (self.api.report)(self.session, actual.max(1.0) as i64) };
         }

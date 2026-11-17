@@ -231,6 +231,29 @@ engineering milestones and risks.
   `LowLatency` lead, causing ~8,600 late frames/sec; `update_lead_for_audio` now floors `lead` at
   `2 × burst` (`1764` frames), eliminating steady-state dropouts (`late 0` in `logcat`, `gfxinfo`
   90th percentile 7–9 ms).
+- [x] SHRUB-V1.01 investigation & Harbor-side fixes (2026-11-17):
+  - Benchmarked `SHRUB-V1.01` on Pixel 7 Pro (`GS201`, `harbor-bench --profile`): SHRUB releases
+    `cpu1` and runs both cores flat-out (`574M` insns on `cpu0` + `1.41B` insns on `cpu1` in 6 s at
+    240 MHz, `0` `cpu1` idle breaks), hitting `~0.33–0.35×` real time at 240 MHz and `~0.48–0.55×`
+    at 120 MHz with 3 keys held (`0.86×` at 60 MHz). The dominant bottleneck is inside `fm1-core`'s
+    JIT: `cpu1` executes ~248M `Fast::Div` and ~41.6M `Raw19`/`Raw21` calls via `h_op` back into
+    Rust (`cpu0` executes ~29M `Raw21`/`Raw16`/`Raw19`/`Un` + ~1.3M `sbc_craw`/`r_mov_psr` slow
+    ops), and both cores run sequentially on one host thread. Lifting SHRUB above `1.0×` at 240 MHz
+    will require `fm1-emu` JIT/dual-core work (not patched here).
+  - Harbor-side fixes applied without touching `fm1-emu`:
+    - `MainActivity.kt`: guard `takeIntent(intent)` with `savedInstanceState == null` and clear
+      `intent.action` so config changes (rotation, Bluetooth connect) no longer re-boot `ACTION_VIEW`
+      firmwares.
+    - `harbor-engine/src/machine.rs`: adaptive `cpu1` scheduler (`run_dual_adaptive`) replacing
+      upstream's per-slice `probing = 512` `chunk = 1` loop (`+6–9%` in `harbor-bench`), plus
+      internal reset / `cpu1` / console / unknown-MMIO diagnostics surfaced to `EventLog`.
+    - `harbor-engine/src/engine.rs`: O(1) `lcd.revision` check instead of 115 KB slice compare
+      every 16 ms, adaptive `CHUNK * 2` when ring fill `< lead / 2`, and tighter sleep floor.
+    - `harbor-jni/src/lib.rs`, `hint.rs`: `sched_setaffinity` to big/prime cores (`>= 75%` max
+      freq; `cpu4..7` on Pixel 7 Pro), `TARGET_LOAD_FG = 0.45`, and API 35/36
+      `setPreferPowerEfficiency(false)` / `notifyWorkloadIncrease` hints.
+    - `AudioScreen.kt`: added `100`, `80`, and `60 MHz` manual clock options for testing heavy
+      firmwares (`CLOCKS` automatic stepping stays `[240, 200, 160, 120]`).
 
 ---
 

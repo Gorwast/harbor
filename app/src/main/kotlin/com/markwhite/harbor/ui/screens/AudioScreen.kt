@@ -122,8 +122,13 @@ private fun ClockPicker(app: HarborApp, s: EngineStatus) {
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             DropdownMenuItem(text = { Text("Automatic (starts at 240, steps down if needed)") }, onClick = { open = false; app.harbor.setClock(240, true) })
-            for (c in listOf(240, 200, 160, 120)) {
-                DropdownMenuItem(text = { Text("$c MHz" + if (c < 240) " (reduced, for heavy firmwares)" else "") }, onClick = { open = false; app.harbor.setClock(c, false) })
+            for (c in listOf(240, 200, 160, 120, 100, 80, 60)) {
+                val note = when {
+                    c <= 100 -> " (testing, may break timing)"
+                    c < 240 -> " (reduced, for heavy firmwares)"
+                    else -> ""
+                }
+                DropdownMenuItem(text = { Text("$c MHz$note") }, onClick = { open = false; app.harbor.setClock(c, false) })
             }
         }
     }

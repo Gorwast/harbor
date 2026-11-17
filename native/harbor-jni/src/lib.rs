@@ -80,12 +80,52 @@ mod libc_timespec {
     pub unsafe fn clock_gettime(ts: &mut Ts) { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts.0); }
 }
 
-/// On the engine thread as it starts: audio priority, and a performance hint session if the
-/// system has them.
+/// On the engine thread as it starts: audio priority, big-core affinity, and a performance hint
+/// session if the system has them.
 fn engine_thread_setup() -> Option<WorkReport> {
     audio_priority();
+    pin_fast_cores();
     let mut hint = hint::Hint::for_this_thread()?;
     Some(Box::new(move |busy, audio, bg| hint.report(busy, audio, bg)))
+}
+
+/// Prefer the SoC's fastest CPU cluster (e.g. Cortex-X1 on Tensor G2) so Android doesn't leave
+/// or migrate the emulator onto little cores between sleeps.
+fn pin_fast_cores() {
+    #[cfg(target_os = "android")]
+    {
+        let mut freqs: Vec<(usize, u64)> = Vec::new();
+        for cpu in 0..32usize {
+            let path = format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/cpuinfo_max_freq");
+            if let Ok(s) = std::fs::read_to_string(&path) {
+                if let Ok(f) = s.trim().parse::<u64>() {
+                    freqs.push((cpu, f));
+                }
+            }
+        }
+        let Some(max_f) = freqs.iter().map(|&(_, f)| f).max() else { return };
+        // Exclude little cores (< 75% of peak clock, e.g. A55 on Tensor G2) while keeping both
+        // prime (X1) and big (A78) cores available so sustained DSP avoids per-core X1 thermal
+        // throttling (measured on Pixel 7 Pro: big >= prime).
+        let big: Vec<usize> = freqs.iter().filter(|&&(_, f)| f >= max_f * 75 / 100).map(|&(c, _)| c).collect();
+        if big.is_empty() || big.len() == freqs.len() {
+            return;
+        }
+        // SAFETY: zeroed cpu_set_t populated with valid cpu indices (< 32).
+        unsafe {
+            let mut set: libc::cpu_set_t = std::mem::zeroed();
+            libc::CPU_ZERO(&mut set);
+            for &c in &big {
+                libc::CPU_SET(c, &mut set);
+            }
+            if libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) == 0 {
+                let min_f = freqs.iter().filter(|(c, _)| big.contains(c)).map(|&(_, f)| f).min().unwrap_or(0);
+                log::info!("engine thread: pinned to big cores {:?} (>= {} MHz)", big, min_f / 1000);
+            } else {
+                log::warn!("engine thread: sched_setaffinity failed");
+            }
+        }
+    }
 }
 
 /// Raise the engine thread to audio priority (what Process.setThreadPriority(URGENT_AUDIO) does).
@@ -530,6 +570,21 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_status(env:
 #[no_mangle]
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_error(env: JNIEnv, _: JClass) -> jstring {
     let msg = host().as_ref().map(|h| h.engine.shared.view.lock().unwrap().error.clone()).unwrap_or_default();
+    env.new_string(msg).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
+/// Take any new engine diagnostic lines (internal resets, cpu1 release, console, unknown MMIO), or null.
+#[no_mangle]
+pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_pollDiagnostic(env: JNIEnv, _: JClass) -> jstring {
+    let h = host();
+    let Some(h) = h.as_ref() else { return std::ptr::null_mut() };
+    if !h.engine.shared.diag_pending.swap(false, std::sync::atomic::Ordering::AcqRel) {
+        return std::ptr::null_mut();
+    }
+    let msg = std::mem::take(&mut h.engine.shared.view.lock().unwrap().diagnostic);
+    if msg.is_empty() {
+        return std::ptr::null_mut();
+    }
     env.new_string(msg).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 

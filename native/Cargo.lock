@@ -156,6 +156,7 @@ version = "0.1.0"
 dependencies = [
  "fm1-soc",
  "harbor-engine",
+ "libc",
 ]
 
 [[package]]

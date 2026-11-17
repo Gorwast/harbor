@@ -1,0 +1,129 @@
+Harbor report
+Device: Google Pixel 7 Pro (GS201), Android 17 (API 37)
+Firmware: SHRUB-V1.01.fwsc.txt (73b4a369e73a66e45c3c14468f336f0c20f801c0da8dea52005996d7751b8537)
+Clock: 120 MHz, automatic true, steps 0; JIT true
+Output: Bluetooth · Soundcore Space A40, 96000 Hz, burst 1920, buffer 3840, exclusive false, lead 1764
+Speed (x real time, last 30 s): 0.83 0.83 0.83
+Dropped frames: 848122; AAudio xruns 0; MIDI bytes dropped 0
+
+Recent events:
+00:11:07.939 W health: 240 MHz, speed 0.55x, load 180%, late 20406, dropped 131296, xruns 0, lead 1764, MIDI in 0
+00:11:08.946 W health: 240 MHz, speed 0.57x, load 175%, late 19140, dropped 150436, xruns 0, lead 1764, MIDI in 0
+00:11:09.954 W health: 240 MHz, speed 0.56x, load 179%, late 19652, dropped 170088, xruns 0, lead 1764, MIDI in 0
+00:11:10.962 W health: 240 MHz, speed 0.57x, load 175%, late 19382, dropped 189470, xruns 0, lead 1764, MIDI in 0
+00:11:11.967 W health: 240 MHz, speed 0.55x, load 182%, late 20164, dropped 209634, xruns 0, lead 1764, MIDI in 0
+00:11:12.974 W health: 200 MHz, speed 0.55x, load 180%, late 20022, dropped 229656, xruns 0, lead 1764, MIDI in 0
+00:11:12.974 W clock stepped down to 200 MHz (speed 0.55x, 20022 frames late; second session: now its boot clock)
+00:11:13.983 W health: 200 MHz, speed 0.55x, load 180%, late 20022, dropped 250062, xruns 0, lead 1764, MIDI in 0
+00:11:14.990 W health: 200 MHz, speed 0.66x, load 151%, late 15542, dropped 265604, xruns 0, lead 1764, MIDI in 0
+00:11:15.996 W health: 200 MHz, speed 0.61x, load 163%, late 17092, dropped 282696, xruns 0, lead 1764, MIDI in 0
+00:11:17.002 W health: 200 MHz, speed 0.60x, load 165%, late 17974, dropped 300670, xruns 0, lead 1764, MIDI in 0
+00:11:18.007 W health: 200 MHz, speed 0.60x, load 167%, late 17860, dropped 318530, xruns 0, lead 1764, MIDI in 0
+00:11:19.014 W health: 200 MHz, speed 0.63x, load 159%, late 16708, dropped 335238, xruns 0, lead 1764, MIDI in 0
+00:11:20.023 W health: 200 MHz, speed 0.73x, load 137%, late 12214, dropped 347452, xruns 0, lead 1764, MIDI in 0
+00:11:21.030 W health: 200 MHz, speed 0.72x, load 138%, late 12854, dropped 360306, xruns 0, lead 1764, MIDI in 0
+00:11:22.039 W health: 200 MHz, speed 0.72x, load 138%, late 12598, dropped 372904, xruns 0, lead 1764, MIDI in 0
+00:11:23.147 W health: 200 MHz, speed 0.73x, load 137%, late 12100, dropped 385004, xruns 0, lead 1764, MIDI in 0
+00:11:24.153 W health: 160 MHz, speed 0.72x, load 138%, late 12598, dropped 397602, xruns 0, lead 1764, MIDI in 0
+00:11:24.154 W clock stepped down to 160 MHz (speed 0.72x, 12598 frames late; second session: now its boot clock)
+00:11:25.164 W health: 160 MHz, speed 0.72x, load 138%, late 12598, dropped 413798, xruns 0, lead 1764, MIDI in 0
+00:11:26.170 W health: 160 MHz, speed 0.75x, load 133%, late 11446, dropped 425244, xruns 0, lead 1764, MIDI in 0
+00:11:27.178 W health: 160 MHz, speed 0.72x, load 138%, late 12484, dropped 437728, xruns 0, lead 1764, MIDI in 0
+00:11:28.189 W health: 160 MHz, speed 0.59x, load 170%, late 17988, dropped 455716, xruns 0, lead 1764, MIDI in 0
+00:11:30.102 W health: 160 MHz, speed 0.50x, load 201%, late 22340, dropped 499998, xruns 0, lead 1764, MIDI in 0
+00:11:31.108 W health: 160 MHz, speed 0.51x, load 195%, late 21572, dropped 521570, xruns 0, lead 1764, MIDI in 0
+00:11:32.117 W health: 160 MHz, speed 0.56x, load 179%, late 19652, dropped 541222, xruns 0, lead 1764, MIDI in 0
+00:11:33.126 W health: 160 MHz, speed 0.82x, load 122%, late 8246, dropped 549468, xruns 0, lead 1764, MIDI in 0
+00:11:34.134 W health: 160 MHz, speed 0.78x, load 128%, late 9924, dropped 559392, xruns 0, lead 1764, MIDI in 0
+00:11:35.146 W health: 160 MHz, speed 0.77x, load 129%, late 10294, dropped 569686, xruns 0, lead 1764, MIDI in 0
+00:11:35.247 W clock stepped down to 120 MHz (speed 0.77x, 10294 frames late; second session: now its boot clock)
+00:11:36.160 W health: 120 MHz, speed 0.77x, load 129%, late 10294, dropped 583564, xruns 0, lead 1764, MIDI in 0
+00:11:37.169 W health: 120 MHz, speed 0.86x, load 116%, late 6468, dropped 590032, xruns 0, lead 1764, MIDI in 0
+00:11:38.183 W health: 120 MHz, speed 0.84x, load 119%, late 7108, dropped 597140, xruns 0, lead 1764, MIDI in 0
+00:11:39.189 W health: 120 MHz, speed 0.65x, load 154%, late 15556, dropped 612696, xruns 0, lead 1764, MIDI in 0
+00:11:40.195 W health: 120 MHz, speed 0.62x, load 161%, late 16836, dropped 629532, xruns 0, lead 1764, MIDI in 0
+00:11:41.201 W health: 120 MHz, speed 0.67x, load 150%, late 14916, dropped 644448, xruns 0, lead 1764, MIDI in 0
+00:11:42.208 W health: 120 MHz, speed 0.79x, load 125%, late 9354, dropped 653802, xruns 0, lead 1764, MIDI in 0
+00:11:43.215 W health: 120 MHz, speed 0.99x, load 101%, late 680, dropped 654482, xruns 0, lead 1764, MIDI in 0
+00:11:44.223 W health: 120 MHz, speed 0.99x, load 101%, late 680, dropped 655162, xruns 0, lead 1764, MIDI in 0
+00:11:45.231 W health: 120 MHz, speed 0.99x, load 101%, late 522, dropped 655684, xruns 0, lead 1764, MIDI in 0
+00:11:46.246 W health: 120 MHz, speed 0.99x, load 100%, late 638, dropped 656322, xruns 0, lead 1764, MIDI in 0
+00:11:47.255 W health: 120 MHz, speed 0.99x, load 101%, late 594, dropped 656916, xruns 0, lead 1764, MIDI in 0
+00:11:48.265 W health: 120 MHz, speed 0.94x, load 106%, late 2714, dropped 659630, xruns 0, lead 1764, MIDI in 0
+00:11:49.271 W health: 120 MHz, speed 0.93x, load 107%, late 3154, dropped 662784, xruns 0, lead 1764, MIDI in 0
+00:11:50.280 W health: 120 MHz, speed 0.93x, load 107%, late 3254, dropped 666038, xruns 0, lead 1764, MIDI in 0
+00:11:51.287 W health: 120 MHz, speed 0.93x, load 107%, late 3140, dropped 669178, xruns 0, lead 1764, MIDI in 0
+00:11:52.298 W health: 120 MHz, speed 0.93x, load 107%, late 3282, dropped 672460, xruns 0, lead 1764, MIDI in 0
+00:11:54.215 W health: 120 MHz, speed 0.93x, load 107%, late 3140, dropped 678854, xruns 0, lead 1764, MIDI in 0
+00:11:55.225 W health: 120 MHz, speed 0.98x, load 101%, late 992, dropped 679846, xruns 0, lead 1764, MIDI in 0
+00:11:56.235 W health: 120 MHz, speed 0.99x, load 100%, late 608, dropped 680454, xruns 0, lead 1764, MIDI in 0
+00:11:57.244 W health: 120 MHz, speed 0.99x, load 100%, late 510, dropped 680964, xruns 0, lead 1764, MIDI in 0
+00:11:58.253 W health: 120 MHz, speed 0.99x, load 101%, late 580, dropped 681544, xruns 0, lead 1764, MIDI in 0
+00:11:59.265 W health: 120 MHz, speed 0.99x, load 100%, late 594, dropped 682138, xruns 0, lead 1764, MIDI in 0
+00:12:00.272 W health: 120 MHz, speed 0.99x, load 100%, late 438, dropped 682576, xruns 0, lead 1764, MIDI in 0
+00:12:01.281 W health: 120 MHz, speed 0.99x, load 100%, late 550, dropped 683126, xruns 0, lead 1764, MIDI in 0
+00:12:02.290 W health: 120 MHz, speed 0.99x, load 100%, late 482, dropped 683608, xruns 0, lead 1764, MIDI in 0
+00:12:03.297 W health: 120 MHz, speed 0.99x, load 100%, late 580, dropped 684188, xruns 0, lead 1764, MIDI in 0
+00:12:04.305 W health: 120 MHz, speed 0.99x, load 100%, late 452, dropped 684640, xruns 0, lead 1764, MIDI in 0
+00:12:05.314 W health: 120 MHz, speed 0.99x, load 100%, late 580, dropped 685220, xruns 0, lead 1764, MIDI in 0
+00:12:06.322 W health: 120 MHz, speed 0.99x, load 100%, late 580, dropped 685800, xruns 0, lead 1764, MIDI in 0
+00:12:07.331 W health: 120 MHz, speed 0.99x, load 100%, late 508, dropped 686308, xruns 0, lead 1764, MIDI in 0
+00:12:08.340 W health: 120 MHz, speed 0.99x, load 100%, late 538, dropped 686846, xruns 0, lead 1764, MIDI in 0
+00:12:09.349 W health: 120 MHz, speed 1.03x, load 97%, late 72, dropped 686918, xruns 0, lead 1764, MIDI in 0
+00:12:39.442 I health: 120 MHz, speed 1.02x, load 98%, late 0, dropped 686918, xruns 0, lead 1764, MIDI in 0
+00:12:44.573 W health: 120 MHz, speed 0.98x, load 101%, late 174, dropped 687092, xruns 0, lead 1764, MIDI in 0
+00:12:45.581 W health: 120 MHz, speed 0.98x, load 101%, late 878, dropped 687970, xruns 0, lead 1764, MIDI in 0
+00:12:46.589 W health: 120 MHz, speed 0.99x, load 100%, late 610, dropped 688580, xruns 0, lead 1764, MIDI in 0
+00:12:47.600 W health: 120 MHz, speed 0.99x, load 100%, late 466, dropped 689046, xruns 0, lead 1764, MIDI in 0
+00:12:49.520 W health: 120 MHz, speed 0.99x, load 100%, late 466, dropped 689936, xruns 0, lead 1764, MIDI in 0
+00:12:50.528 W health: 120 MHz, speed 0.99x, load 100%, late 466, dropped 690402, xruns 0, lead 1764, MIDI in 0
+00:12:51.538 W health: 120 MHz, speed 0.99x, load 100%, late 508, dropped 690910, xruns 0, lead 1764, MIDI in 0
+00:12:52.545 W health: 120 MHz, speed 0.99x, load 100%, late 380, dropped 691290, xruns 0, lead 1764, MIDI in 0
+00:12:53.553 W health: 120 MHz, speed 0.99x, load 100%, late 368, dropped 691658, xruns 0, lead 1764, MIDI in 0
+00:12:54.563 W health: 120 MHz, speed 0.99x, load 100%, late 510, dropped 692168, xruns 0, lead 1764, MIDI in 0
+00:12:55.570 W health: 120 MHz, speed 0.99x, load 100%, late 338, dropped 692506, xruns 0, lead 1764, MIDI in 0
+00:12:56.579 W health: 120 MHz, speed 0.99x, load 100%, late 466, dropped 692972, xruns 0, lead 1764, MIDI in 0
+00:12:57.586 W health: 120 MHz, speed 0.99x, load 100%, late 566, dropped 693538, xruns 0, lead 1764, MIDI in 0
+00:12:58.594 W health: 120 MHz, speed 0.99x, load 100%, late 438, dropped 693976, xruns 0, lead 1764, MIDI in 0
+00:12:59.603 W health: 120 MHz, speed 0.99x, load 100%, late 324, dropped 694300, xruns 0, lead 1764, MIDI in 0
+00:13:00.612 W health: 120 MHz, speed 0.99x, load 100%, late 552, dropped 694852, xruns 0, lead 1764, MIDI in 0
+00:13:01.620 W health: 120 MHz, speed 0.99x, load 100%, late 452, dropped 695304, xruns 0, lead 1764, MIDI in 0
+00:13:02.630 W health: 120 MHz, speed 0.99x, load 100%, late 352, dropped 695656, xruns 0, lead 1764, MIDI in 0
+00:13:03.641 W health: 120 MHz, speed 0.99x, load 100%, late 552, dropped 696208, xruns 0, lead 1764, MIDI in 0
+00:13:04.649 W health: 120 MHz, speed 0.99x, load 100%, late 366, dropped 696574, xruns 0, lead 1764, MIDI in 0
+00:13:05.656 W health: 120 MHz, speed 0.99x, load 101%, late 722, dropped 697296, xruns 0, lead 1764, MIDI in 0
+00:13:06.662 W health: 120 MHz, speed 0.99x, load 101%, late 608, dropped 697904, xruns 0, lead 1764, MIDI in 0
+00:13:07.667 W health: 120 MHz, speed 0.99x, load 101%, late 624, dropped 698528, xruns 0, lead 1764, MIDI in 0
+00:13:08.676 W health: 120 MHz, speed 0.99x, load 101%, late 708, dropped 699236, xruns 0, lead 1764, MIDI in 0
+00:13:10.587 W health: 120 MHz, speed 0.99x, load 101%, late 566, dropped 700510, xruns 0, lead 1764, MIDI in 0
+00:13:11.591 W health: 120 MHz, speed 0.99x, load 101%, late 836, dropped 701346, xruns 0, lead 1764, MIDI in 0
+00:13:12.598 W health: 120 MHz, speed 0.99x, load 101%, late 722, dropped 702068, xruns 0, lead 1764, MIDI in 0
+00:13:13.603 W health: 120 MHz, speed 0.99x, load 101%, late 694, dropped 702762, xruns 0, lead 1764, MIDI in 0
+00:13:14.609 W health: 120 MHz, speed 0.99x, load 101%, late 694, dropped 703456, xruns 0, lead 1764, MIDI in 0
+00:13:15.617 W health: 120 MHz, speed 0.99x, load 101%, late 750, dropped 704206, xruns 0, lead 1764, MIDI in 0
+00:13:16.625 W health: 120 MHz, speed 0.99x, load 101%, late 680, dropped 704886, xruns 0, lead 1764, MIDI in 0
+00:13:17.631 W health: 120 MHz, speed 0.98x, load 101%, late 850, dropped 705736, xruns 0, lead 1764, MIDI in 0
+00:13:18.638 W health: 120 MHz, speed 0.98x, load 101%, late 850, dropped 706586, xruns 0, lead 1764, MIDI in 0
+00:13:19.646 W health: 120 MHz, speed 0.93x, load 107%, late 3354, dropped 709940, xruns 0, lead 1764, MIDI in 0
+00:13:20.652 W health: 120 MHz, speed 0.92x, load 108%, late 3410, dropped 713350, xruns 0, lead 1764, MIDI in 0
+00:13:21.661 W health: 120 MHz, speed 0.92x, load 108%, late 3624, dropped 716974, xruns 0, lead 1764, MIDI in 0
+00:13:22.669 W health: 120 MHz, speed 0.93x, load 107%, late 3168, dropped 720142, xruns 0, lead 1764, MIDI in 0
+00:13:23.678 W health: 120 MHz, speed 0.93x, load 107%, late 3254, dropped 723396, xruns 0, lead 1764, MIDI in 0
+00:13:24.687 W health: 120 MHz, speed 0.93x, load 107%, late 3012, dropped 726408, xruns 0, lead 1764, MIDI in 0
+00:13:25.693 W health: 120 MHz, speed 0.93x, load 107%, late 3496, dropped 729904, xruns 0, lead 1764, MIDI in 0
+00:13:26.700 W health: 120 MHz, speed 0.99x, load 101%, late 764, dropped 730668, xruns 0, lead 1764, MIDI in 0
+00:13:27.708 W health: 120 MHz, speed 0.99x, load 101%, late 780, dropped 731448, xruns 0, lead 1764, MIDI in 0
+00:13:28.716 W health: 120 MHz, speed 0.99x, load 100%, late 436, dropped 731884, xruns 0, lead 1764, MIDI in 0
+00:13:29.726 W health: 120 MHz, speed 0.99x, load 100%, late 482, dropped 732366, xruns 0, lead 1764, MIDI in 0
+00:13:30.468 I boot #4 SHRUB-V1.01.fwsc.txt (73b4a369e73a): 120 MHz auto, 0 saved sectors
+00:13:30.532 I boot #4 running after 64 ms: 120 MHz, JIT on
+00:13:33.548 W health: 120 MHz, speed 0.87x, load 114%, late 6184, dropped 754354, xruns 0, lead 1764, MIDI in 0
+00:13:34.555 W health: 120 MHz, speed 0.67x, load 148%, late 14518, dropped 768872, xruns 0, lead 1764, MIDI in 0
+00:13:35.561 W health: 120 MHz, speed 0.66x, load 152%, late 15300, dropped 784172, xruns 0, lead 1764, MIDI in 0
+00:13:36.568 W health: 120 MHz, speed 0.66x, load 152%, late 15172, dropped 799344, xruns 0, lead 1764, MIDI in 0
+00:13:37.574 W health: 120 MHz, speed 0.77x, load 129%, late 10308, dropped 809652, xruns 0, lead 1764, MIDI in 0
+00:13:38.583 W health: 120 MHz, speed 0.83x, load 120%, late 7748, dropped 817400, xruns 0, lead 1764, MIDI in 0
+00:13:39.597 W health: 120 MHz, speed 0.83x, load 120%, late 7862, dropped 825262, xruns 0, lead 1764, MIDI in 0
+00:13:40.606 W health: 120 MHz, speed 0.83x, load 120%, late 7364, dropped 832626, xruns 0, lead 1764, MIDI in 0
+00:13:41.612 W health: 120 MHz, speed 0.83x, load 120%, late 7748, dropped 840374, xruns 0, lead 1764, MIDI in 0
+00:13:42.617 W health: 120 MHz, speed 0.83x, load 120%, late 7748, dropped 848122, xruns 0, lead 1764, MIDI in 0

@@ -50,6 +50,7 @@ object NativeEngine {
     @JvmStatic external fun panelControls(out: IntArray)
     @JvmStatic external fun status(out: DoubleArray)
     @JvmStatic external fun error(): String
+    @JvmStatic external fun pollDiagnostic(): String?
     @JvmStatic external fun flashSectors(): ByteArray?
     /** Blocks up to [timeoutMs]: the flash once no write is in progress, or null. */
     @JvmStatic external fun flush(timeoutMs: Int): ByteArray?

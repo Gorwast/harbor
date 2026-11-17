@@ -32,7 +32,7 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
         val app = application as HarborApp
-        takeIntent(intent)
+        if (savedInstanceState == null) takeIntent(intent)
         setContent {
             HarborTheme {
                 HarborRoot(app, pending, onPendingHandled = { pending = null }, onPerformance = ::immersive)
@@ -53,7 +53,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun takeIntent(intent: Intent?) {
-        if (intent?.action == Intent.ACTION_VIEW) intent.data?.let { pending = PendingOpen(it) }
+        if (intent?.action == Intent.ACTION_VIEW) {
+            intent.data?.let { pending = PendingOpen(it) }
+            intent.action = null
+        }
     }
 
     /** Hides the system bars the screen asks to (a swipe from the edge brings them back). */

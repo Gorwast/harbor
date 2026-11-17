@@ -132,6 +132,9 @@ pub struct View {
     pub midi_in: u64,
     /// Frames between a MIDI message's arrival and its sound.
     pub lead: usize,
+    /// Diagnostic notices (firmware internal resets, cpu1 release, console output, unknown MMIO).
+    pub diag_rev: u64,
+    pub diagnostic: String,
 }
 
 impl Default for View {
@@ -158,6 +161,8 @@ impl Default for View {
             midi_dropped: 0,
             midi_in: 0,
             lead: 0,
+            diag_rev: 0,
+            diagnostic: String::new(),
         }
     }
 }
@@ -189,6 +194,7 @@ pub struct Shared {
     pub lead: AtomicUsize,
     /// Mirrors `view.lcd_rev` so the UI thread skips locking `view` when the screen didn't change.
     pub lcd_rev: AtomicU64,
+    pub diag_pending: AtomicBool,
     pub background: AtomicBool,
     quit: AtomicBool,
     /// Tests: sleep this many times the emulation time after each chunk, as a slower device
@@ -221,6 +227,7 @@ impl Engine {
             clock: AudioClock::default(),
             lead: AtomicUsize::new(lead.clamp(64, RING / 2)),
             lcd_rev: AtomicU64::new(0),
+            diag_pending: AtomicBool::new(false),
             background: AtomicBool::new(false),
             quit: AtomicBool::new(false),
             throttle: AtomicU32::new(0),
@@ -355,6 +362,11 @@ struct Running {
     flash_rev_seen: u32,
     flash_quiet_since: Instant,
     published_rev: u32,
+    cpu1_logged: bool,
+    console_seen: usize,
+    resets_seen: u32,
+    unknown_seen: usize,
+    lcd_soc_rev: u32,
 }
 
 struct PendingFlush {
@@ -417,6 +429,7 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
                             r = Some(Running {
                                 m, pkg: b.pkg.clone(), boot_id: b.id, auto: b.auto_clock, seconds: 0, slow: 0,
                                 flash_rev_seen: rev, flash_quiet_since: Instant::now(), published_rev: rev,
+                                cpu1_logged: false, console_seen: 0, resets_seen: 0, unknown_seen: 0, lcd_soc_rev: u32::MAX,
                             });
                         }
                         Err(e) => {
@@ -506,7 +519,7 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
 
         if fill >= lead {
             let surplus_us = (fill - lead) as u64 * 1_000_000 / RATE as u64;
-            std::thread::sleep(Duration::from_micros((surplus_us / 2).clamp(500, 2_000)));
+            std::thread::sleep(Duration::from_micros((surplus_us / 2).clamp(250, 2_000)));
         } else {
             while due.front().is_some_and(|e| e.frame <= made) {
                 let e = due.pop_front().unwrap();
@@ -515,8 +528,13 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
                 }
                 midi_in += e.bytes.len() as u64;
             }
+            let chunk = if fill < lead / 2 && due.front().is_none_or(|e| e.frame > made + 10) {
+                CHUNK * 2
+            } else {
+                CHUNK
+            };
             let t0 = Instant::now();
-            rr.m.run(CHUNK);
+            rr.m.run(chunk);
             let throttle = f32::from_bits(shared.throttle.load(Ordering::Relaxed));
             if throttle > 0.0 {
                 std::thread::sleep(t0.elapsed().mul_f32(throttle));
@@ -580,9 +598,11 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
 
         if last_view.elapsed() >= Duration::from_millis(16) {
             last_view = Instant::now();
-            // Compare LCD pixels outside the view lock so unchanged frames avoid blocking UI reads.
-            let lcd_changed = lcd_cache[..] != rr.m.soc.lcd.fb[..];
+            // Compare LCD revision first (O(1)) and only copy pixels when the panel changed.
+            let soc_lcd_rev = rr.m.soc.lcd.revision;
+            let lcd_changed = soc_lcd_rev != rr.lcd_soc_rev;
             if lcd_changed {
+                rr.lcd_soc_rev = soc_lcd_rev;
                 lcd_cache.copy_from_slice(&rr.m.soc.lcd.fb);
             }
             let mut v = shared.view.lock().unwrap();
@@ -617,6 +637,38 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
             if rr.m.halted && v.state != RunState::Halted {
                 v.state = RunState::Halted;
                 v.error = rr.m.fault.clone();
+            }
+            // Collect non-hot-path firmware diagnostics (second core, internal resets, console, unknown MMIO).
+            if !rr.cpu1_logged && rr.m.cpu1.is_some() {
+                rr.cpu1_logged = true;
+                push_diag(&shared, &mut v, format!("firmware released second core (cpu1) at {} ms", ms_now));
+            }
+            if rr.m.firmware_resets > rr.resets_seen {
+                rr.resets_seen = rr.m.firmware_resets;
+                push_diag(&shared, &mut v, format!("firmware reset itself internally (#{}, {} ms, pc {:#010x}, {} MHz)",
+                    rr.resets_seen, ms_now, rr.m.cpu.pc, rr.m.mhz()));
+            }
+            if rr.m.soc.console.len() > rr.console_seen {
+                let tail = &rr.m.soc.console[rr.console_seen..];
+                rr.console_seen = rr.m.soc.console.len();
+                let msg = String::from_utf8_lossy(tail).replace(['\r', '\n'], " ").trim().to_owned();
+                if !msg.is_empty() {
+                    let short: String = msg.chars().take(180).collect();
+                    push_diag(&shared, &mut v, format!("fw console: {short}"));
+                }
+            }
+            let unk_len = rr.m.soc.unknown_accesses().len();
+            if unk_len > rr.unknown_seen {
+                let first_new = rr.unknown_seen == 0;
+                let sample: Vec<String> = rr.m.soc.unknown_accesses()[rr.unknown_seen..]
+                    .iter()
+                    .take(4)
+                    .map(|u| format!("{}{:#x}={:#x}", if u.is_write { "W@" } else { "R@" }, u.addr, u.value))
+                    .collect();
+                rr.unknown_seen = unk_len;
+                if first_new && !sample.is_empty() {
+                    push_diag(&shared, &mut v, format!("unknown MMIO ({} accesses, sample: {})", unk_len, sample.join(", ")));
+                }
             }
             if speed_t.elapsed() >= Duration::from_secs(1) {
                 let ms = rr.m.soc.periph.ms();
@@ -663,6 +715,11 @@ fn reclock(shared: &Shared, rr: &mut Running, mhz: u32, pot: u16, due: &mut VecD
             rr.slow = 0;
             rr.flash_rev_seen = rev;
             rr.published_rev = rev;
+            rr.cpu1_logged = false;
+            rr.console_seen = 0;
+            rr.resets_seen = 0;
+            rr.unknown_seen = 0;
+            rr.lcd_soc_rev = u32::MAX;
             due.clear();
             // the restored sectors are the flash's state: publish them so nothing looks lost
             *revision += 1;
@@ -673,6 +730,17 @@ fn reclock(shared: &Shared, rr: &mut Running, mhz: u32, pot: u16, due: &mut VecD
             v.error = e;
         }
     }
+}
+
+fn push_diag(shared: &Shared, v: &mut View, line: String) {
+    if v.diagnostic.is_empty() {
+        v.diagnostic = line;
+    } else if v.diagnostic.len() < 1024 {
+        v.diagnostic.push('\n');
+        v.diagnostic.push_str(&line);
+    }
+    v.diag_rev += 1;
+    shared.diag_pending.store(true, Ordering::Release);
 }
 
 fn current_flash(r: &Running, revision: u64) -> Flash {

@@ -41,8 +41,8 @@ const RAM_BASE: u32 = 0x01c0_0000;
 const RAM_SIZE: usize = 1 << 20;
 
 pub struct Machine {
-    cpu: Cpu,
-    cpu1: Option<Cpu>,
+    pub cpu: Cpu,
+    pub cpu1: Option<Cpu>,
     pub soc: Soc,
     pending_tick: bool,
     pub halted: bool,
@@ -50,6 +50,13 @@ pub struct Machine {
     pub fault: String,
     /// the flash as booted (before saved sectors and a DX7 bank): what a save is compared with
     flash0: Vec<u8>,
+    pub entry_pc: u32,
+    cpu1_was_idle: bool,
+    pub cpu0_insns: u64,
+    pub cpu1_insns: u64,
+    pub cpu1_idle_breaks: u64,
+    pub cpu1_slices: u64,
+    pub firmware_resets: u32,
 }
 
 impl Machine {
@@ -81,18 +88,142 @@ impl Machine {
                 .collect();
             restore_flash(&mut soc, &changed);
         }
-        Ok(Machine { cpu, cpu1: None, soc, pending_tick: false, halted: false, fault: String::new(), flash0 })
+        Ok(Machine {
+            cpu,
+            cpu1: None,
+            soc,
+            pending_tick: false,
+            halted: false,
+            fault: String::new(),
+            flash0,
+            entry_pc: st.entry,
+            cpu1_was_idle: true,
+            cpu0_insns: 0,
+            cpu1_insns: 0,
+            cpu1_idle_breaks: 0,
+            cpu1_slices: 0,
+            firmware_resets: 0,
+        })
+    }
+
+    /// Enable or disable per-op profiling on both cores (for `harbor-bench`).
+    pub fn set_profile(&mut self, on: bool) {
+        self.cpu.profile = on;
+        if let Some(c1) = self.cpu1.as_mut() {
+            c1.profile = on;
+        }
     }
 
     /// fm1-live's loop: cpu0's blocks, cpu1 beside once the firmware releases it.
     pub fn run(&mut self, n: u32) {
+        self.run_with_dual(n, true);
+    }
+
+    /// Run `n` cpu0 instructions, using either Harbor's adaptive cpu1 scheduler or upstream's `run_dual`.
+    pub fn run_with_dual(&mut self, n: u32, fast_dual: bool) {
         let jit = self.cpu.jit_on;
-        let Machine { cpu, cpu1, soc, pending_tick, .. } = self;
-        if let Err(e) = machine::run_dual(cpu1, soc, n, RAM_SIZE, jit, |soc, k| machine::run_blocks(cpu, soc, k, pending_tick)) {
-            let core = if cpu1.is_some() { "two cores" } else { "one core" };
-            self.fault = format!("{e} ({core}, {} ms after boot)", soc.periph.ms());
+        let res = if fast_dual {
+            self.run_dual_adaptive(n, jit)
+        } else {
+            let Machine { cpu, cpu1, soc, pending_tick, .. } = self;
+            let c0_before = cpu.insn_count;
+            let c1_before = cpu1.as_ref().map_or(0, |c| c.insn_count);
+            let r = machine::run_dual(cpu1, soc, n, RAM_SIZE, jit, |soc, k| {
+                machine::run_blocks(cpu, soc, k, pending_tick)
+            });
+            self.cpu0_insns += cpu.insn_count - c0_before;
+            if let Some(c1) = cpu1.as_ref() {
+                self.cpu1_insns += c1.insn_count - c1_before;
+            }
+            r
+        };
+        if self.soc.periph.ms() >= 500 && (self.entry_pc..self.entry_pc.saturating_add(16)).contains(&self.cpu.pc) {
+            self.firmware_resets += 1;
+        }
+        if let Err(e) = res {
+            let core = if self.cpu1.is_some() { "two cores" } else { "one core" };
+            self.fault = format!("{e} ({core}, {} ms after boot)", self.soc.periph.ms());
             self.halted = true;
         }
+    }
+
+    fn run_dual_adaptive(&mut self, n: u32, jit_on: bool) -> Result<(), String> {
+        let mut done = 0u32;
+        while self.cpu1.is_none() {
+            if let Some(mut c1) = machine::released_cpu1(&mut self.soc, RAM_SIZE) {
+                c1.jit_on = jit_on;
+                c1.profile = self.cpu.profile;
+                self.cpu1 = Some(c1);
+                break;
+            }
+            if done >= n {
+                return Ok(());
+            }
+            let k = (n - done).min(4096);
+            self.soc.periph.room_cap = k as u64;
+            let c0_before = self.cpu.insn_count;
+            machine::run_blocks(&mut self.cpu, &mut self.soc, k, &mut self.pending_tick)?;
+            self.cpu0_insns += self.cpu.insn_count - c0_before;
+            done += k;
+        }
+        let Some(c1) = self.cpu1.as_mut() else { return Ok(()) };
+        self.soc.periph.room_cap = machine::SLICE as u64;
+        while done < n {
+            let k = (n - done).min(machine::SLICE);
+            let c0 = self.soc.periph.cycles;
+            if self.soc.core_paused(0) {
+                self.soc.advance(k as u64);
+            } else {
+                let c0_before = self.cpu.insn_count;
+                machine::run_blocks(&mut self.cpu, &mut self.soc, k, &mut self.pending_tick)?;
+                self.cpu0_insns += self.cpu.insn_count - c0_before;
+            }
+            done += k;
+            let dt = self.soc.periph.cycles - c0;
+            if !self.soc.core_paused(1) && dt > 0 {
+                self.cpu1_slices += 1;
+                let probe = (c1.pc, c1.regs, c1.sp);
+                let mut left = dt.min(1 << 20);
+                // Probe at single-step granularity only when cpu1 was idle on the last slice
+                // (or periodically every 16 slices to catch newly-idled loops) instead of 512x1 every slice.
+                let mut probing = if self.cpu1_was_idle || (self.cpu1_slices & 15) == 0 { 64u64 } else { 0u64 };
+                let mut broke_idle = false;
+                let c1_before = c1.insn_count;
+                while left > 0 {
+                    if self.soc.periph.any_pending() {
+                        if let Some((irq, prio)) = self.soc.pending_irq_for(1) {
+                            if c1.irq_ready(prio) {
+                                let handler = fm1_core::Bus::read32(&mut self.soc, fm1_soc::VEC_BASE + 4 * irq as u32);
+                                c1.interrupt(handler, prio);
+                                probing = 0;
+                            }
+                        }
+                    }
+                    let chunk = if probing > 0 { 1 } else { left.min(256) };
+                    let mut bus = machine::Core1Bus { soc: &mut self.soc, budget: chunk.max(64) + 1 };
+                    let ran = match c1.run_fast(&mut bus, chunk as u32) {
+                        Ok((0, _)) => {
+                            if let Err(e) = c1.step(&mut bus) {
+                                return Err(format!("cpu1: {e:?} at pc {:#010x}", c1.pc));
+                            }
+                            1
+                        }
+                        Ok((ran, _)) => ran as u64,
+                        Err(e) => return Err(format!("cpu1: {e:?} at pc {:#010x}", c1.pc)),
+                    };
+                    left = left.saturating_sub(ran);
+                    probing = probing.saturating_sub(ran);
+                    if c1.pc == probe.0 && c1.sp == probe.2 && c1.regs == probe.1 {
+                        broke_idle = true;
+                        self.cpu1_idle_breaks += 1;
+                        break;
+                    }
+                }
+                self.cpu1_insns += c1.insn_count - c1_before;
+                self.cpu1_was_idle = broke_idle;
+            }
+        }
+        Ok(())
     }
 
     pub fn board(&self) -> Board { self.soc.board }
@@ -142,7 +273,22 @@ mod tests {
     fn machine_of(fill: u8) -> Machine {
         let soc = Soc::new(RAM_SIZE, vec![fill; 0x80000]);
         let flash0 = soc.flash.mem.clone();
-        Machine { cpu: Cpu::new(0x0200_0120), cpu1: None, soc, pending_tick: false, halted: false, fault: String::new(), flash0 }
+        Machine {
+            cpu: Cpu::new(0x0200_0120),
+            cpu1: None,
+            soc,
+            pending_tick: false,
+            halted: false,
+            fault: String::new(),
+            flash0,
+            entry_pc: 0x0200_0120,
+            cpu1_was_idle: true,
+            cpu0_insns: 0,
+            cpu1_insns: 0,
+            cpu1_idle_breaks: 0,
+            cpu1_slices: 0,
+            firmware_resets: 0,
+        }
     }
 
     #[test]

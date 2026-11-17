@@ -8,3 +8,6 @@ license.workspace = true
 [dependencies]
 harbor-engine.workspace = true
 fm1-soc.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

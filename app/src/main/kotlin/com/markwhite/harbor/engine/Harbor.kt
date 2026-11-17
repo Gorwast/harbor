@@ -554,6 +554,11 @@ class Harbor(
                     RunState.Idle -> {}
                 }
                 health(s, nowMs)
+                NativeEngine.pollDiagnostic()?.let { diag ->
+                    for (line in diag.lineSequence()) {
+                        if (line.isNotBlank()) EventLog.w(line)
+                    }
+                }
                 // a long session that never stepped down: the earlier step was a fluke
                 if (s.state == RunState.Running && s.clockSteps == 0 && runningSinceMs > 0 && nowMs - runningSinceMs > 120_000 &&
                     settings.clockSeen(d.pkg.sha) != 0) {
