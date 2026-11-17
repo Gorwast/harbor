@@ -32,6 +32,12 @@ class MidiMappingTest {
         assertEquals(8, mpk.mappedCount)
         assertEquals(MidiTrigger(TriggerKind.Cc, 70), mpk.knobs[2]?.cc)
         assertEquals(MidiTrigger(TriggerKind.Cc, 77), mpk.knobs[DeviceMapping.MASTER_KNOB_ID]?.cc)
+
+        val mpkRel = DeviceMapping.AKAI_MPK_MINI_RELATIVE
+        assertEquals(8, mpkRel.mappedCount)
+        assertEquals(KnobMode.RelativeTwosComp, mpkRel.knobMode)
+        assertEquals(KnobSensitivity.Fine, mpkRel.sensitivity)
+        assertEquals(listOf(KnobSensitivity.ExtraFine, KnobSensitivity.Fine, KnobSensitivity.Normal, KnobSensitivity.Fast), KnobSensitivity.UI_ORDER)
     }
 
     @Test

@@ -42,6 +42,13 @@ enum class KnobSensitivity(val label: String) {
     Fine("Fine"),
     Normal("Normal"),
     Fast("Fast"),
+    ExtraFine("Extra fine"),
+    ;
+
+    companion object {
+        /** Ordered from slowest/finest to fastest for the UI segmented control. */
+        val UI_ORDER = listOf(ExtraFine, Fine, Normal, Fast)
+    }
 }
 
 /**
@@ -135,9 +142,13 @@ data class DeviceMapping(
         )
 
         /** Map 8 consecutive MIDI CCs (`firstCc..firstCc+7`) to the 8 FM-1 knobs in [KNOB_TARGETS] order. */
-        fun eightKnobPreset(firstCc: Int): DeviceMapping = DeviceMapping(
-            knobMode = KnobMode.Absolute,
-            sensitivity = KnobSensitivity.Normal,
+        fun eightKnobPreset(
+            firstCc: Int,
+            knobMode: KnobMode = KnobMode.Absolute,
+            sensitivity: KnobSensitivity = KnobSensitivity.Normal,
+        ): DeviceMapping = DeviceMapping(
+            knobMode = knobMode,
+            sensitivity = sensitivity,
             knobs = KNOB_TARGETS.mapIndexed { i, target ->
                 target.id to KnobBinding(cc = MidiTrigger(TriggerKind.Cc, firstCc + i, channel = -1))
             }.toMap(),
@@ -146,8 +157,15 @@ data class DeviceMapping(
         /** Novation Launchkey Mini MK3: pots 1–8 send CC 21–28 by default. */
         val LAUNCHKEY_MINI_MK3: DeviceMapping = eightKnobPreset(21)
 
-        /** Akai MPK Mini: knobs K1–K8 send CC 70–77 by default. */
+        /** Akai MPK Mini (default absolute program): knobs K1–K8 send CC 70–77. */
         val AKAI_MPK_MINI: DeviceMapping = eightKnobPreset(70)
+
+        /** Akai MPK Mini flashed with Relative knobs: CC 70–77 in Two's Complement with Fine sensitivity. */
+        val AKAI_MPK_MINI_RELATIVE: DeviceMapping = eightKnobPreset(
+            firstCc = 70,
+            knobMode = KnobMode.RelativeTwosComp,
+            sensitivity = KnobSensitivity.Fine,
+        )
 
         /** Default mapping when a device is connected for the first time with no saved mapping. */
         fun defaultForDevice(name: String): DeviceMapping {

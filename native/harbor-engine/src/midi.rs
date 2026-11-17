@@ -63,16 +63,18 @@ impl KnobMode {
     }
 }
 
-/// How many CC units of an absolute 0..127 pot make one encoder detent click.
+/// How many CC units (absolute) or pulses (relative) make one encoder detent click.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Sensitivity {
-    /// 4 CC steps per click (~32 clicks across a full sweep).
+    /// 4 CC units (absolute) or 4 pulses (relative) per click.
     Fine = 0,
-    /// 2 CC steps per click (~64 clicks across a full sweep).
+    /// 2 CC units (absolute) or 2 pulses (relative) per click.
     #[default]
     Normal = 1,
-    /// 1 CC step per click (127 clicks across a full sweep).
+    /// 1 CC unit (absolute) or 1 pulse (relative) per click.
     Fast = 2,
+    /// 6 CC units (absolute) or 8 pulses (relative) per click: for sensitive endless encoders.
+    ExtraFine = 3,
 }
 
 impl Sensitivity {
@@ -80,15 +82,35 @@ impl Sensitivity {
         match v {
             0 => Sensitivity::Fine,
             2 => Sensitivity::Fast,
+            3 => Sensitivity::ExtraFine,
             _ => Sensitivity::Normal,
         }
     }
 
-    pub fn step(self) -> i32 {
+    pub fn abs_step(self) -> i32 {
         match self {
+            Sensitivity::ExtraFine => 6,
             Sensitivity::Fine => 4,
             Sensitivity::Normal => 2,
             Sensitivity::Fast => 1,
+        }
+    }
+
+    pub fn rel_step(self) -> i32 {
+        match self {
+            Sensitivity::ExtraFine => 8,
+            Sensitivity::Fine => 4,
+            Sensitivity::Normal => 2,
+            Sensitivity::Fast => 1,
+        }
+    }
+
+    pub fn rel_pot_step(self) -> i16 {
+        match self {
+            Sensitivity::ExtraFine => 4,
+            Sensitivity::Fine => 8,
+            Sensitivity::Normal => 16,
+            Sensitivity::Fast => 32,
         }
     }
 }
@@ -307,9 +329,9 @@ impl MidiParser {
                             panel(PanelAction::Pot(v));
                         }
                         KnobMode::RelativeTwosComp | KnobMode::RelativeBinaryOffset => {
-                            let clicks = self.relative_clicks(d1);
-                            if clicks != 0 {
-                                panel(PanelAction::PotDelta((clicks * 16).clamp(-1023, 1023) as i16));
+                            let dir = self.raw_relative_delta(d1).signum() as i16;
+                            if dir != 0 {
+                                panel(PanelAction::PotDelta(dir * self.sensitivity.rel_pot_step()));
                             }
                         }
                     }
@@ -317,9 +339,13 @@ impl MidiParser {
                 (TriggerKind::Cc, ControlTarget::Enc(enc)) => {
                     let clicks = match self.knob_mode {
                         KnobMode::Absolute => {
-                            let step = self.sensitivity.step();
+                            let step = self.sensitivity.abs_step();
                             if let Some(prev) = prev_cc {
-                                let total = (d1 as i32 - prev as i32) + self.cc_rem[cc_idx] as i32;
+                                let delta = d1 as i32 - prev as i32;
+                                if (delta > 0 && self.cc_rem[cc_idx] < 0) || (delta < 0 && self.cc_rem[cc_idx] > 0) {
+                                    self.cc_rem[cc_idx] = 0;
+                                }
+                                let total = delta + self.cc_rem[cc_idx] as i32;
                                 let c = total / step;
                                 self.cc_rem[cc_idx] = (total % step) as i8;
                                 c
@@ -329,7 +355,9 @@ impl MidiParser {
                                 0
                             }
                         }
-                        KnobMode::RelativeTwosComp | KnobMode::RelativeBinaryOffset => self.relative_clicks(d1),
+                        KnobMode::RelativeTwosComp | KnobMode::RelativeBinaryOffset => {
+                            self.accumulated_relative_clicks(cc_idx, d1)
+                        }
                     };
                     if clicks != 0 {
                         panel(PanelAction::Enc { enc, clicks });
@@ -384,15 +412,47 @@ impl MidiParser {
         matched
     }
 
-    fn relative_clicks(&self, val: u8) -> i32 {
+    /// Decode a relative CC value into a signed delta, auto-guarding against a Two's-Complement vs
+    /// Binary-Offset mismatch (1..32 / 96..127 is Two's Comp; 65..95 / 33..63 is Binary Offset 64).
+    fn raw_relative_delta(&self, val: u8) -> i32 {
         let v = (val & 0x7f) as i32;
         match self.knob_mode {
-            KnobMode::RelativeTwosComp => {
-                if v == 0 || v == 64 { 0 } else if v < 64 { v } else { v - 128 }
-            }
-            KnobMode::RelativeBinaryOffset => v - 64,
+            KnobMode::RelativeTwosComp => match v {
+                0 | 64 => 0,
+                1..=32 => v,
+                96..=127 => v - 128,
+                65..=95 => v - 64,
+                33..=63 => v - 64,
+                _ => 0,
+            },
+            KnobMode::RelativeBinaryOffset => match v {
+                0 | 64 => 0,
+                65..=95 => v - 64,
+                33..=63 => v - 64,
+                1..=32 => v,
+                96..=127 => v - 128,
+                _ => 0,
+            },
             KnobMode::Absolute => 0,
         }
+    }
+
+    /// Normalize each relative CC pulse to ±1 (preventing hardware velocity acceleration from
+    /// jumping menus) and divide by the sensitivity's relative step count.
+    fn accumulated_relative_clicks(&mut self, cc_idx: usize, val: u8) -> i32 {
+        let raw = self.raw_relative_delta(val);
+        let dir = raw.signum();
+        if dir == 0 {
+            return 0;
+        }
+        let step = self.sensitivity.rel_step();
+        if (dir > 0 && self.cc_rem[cc_idx] < 0) || (dir < 0 && self.cc_rem[cc_idx] > 0) {
+            self.cc_rem[cc_idx] = 0;
+        }
+        let total = dir + self.cc_rem[cc_idx] as i32;
+        let clicks = total / step;
+        self.cc_rem[cc_idx] = (total % step) as i8;
+        clicks
     }
 
     fn track(&mut self, msg: &[u8]) {
@@ -586,5 +646,39 @@ mod tests {
         p.release_all_with_panel(&mut |m| uart.push(m.to_vec()), &mut |a| actions.push(a));
         assert_eq!(uart, vec![vec![0x81, 36, 0]]);
         assert_eq!(actions, vec![PanelAction::Key { id: 12, down: false }]);
+    }
+
+    #[test]
+    fn relative_knobs_tame_acceleration_and_respect_fine_sensitivity() {
+        let mut p = MidiParser::new(None);
+        p.set_mapping(
+            vec![MappingRule {
+                trigger: Trigger { kind: TriggerKind::Cc, number: 70, channel: None },
+                target: ControlTarget::Enc(0), // SELECT
+            }],
+            KnobMode::RelativeTwosComp,
+            Sensitivity::Fine, // 4 relative pulses per click
+        );
+        let mut actions = Vec::new();
+        let mut learned = None;
+
+        // 4 clockwise ticks (even with accelerated values like 1, 5, 12, 3) produce exactly +1 click;
+        // 4 counter-clockwise ticks (127, 120, 125, 127) produce -1 click.
+        p.feed_mapped(
+            &[
+                0xb0, 70, 1, 0xb0, 70, 5, 0xb0, 70, 12, 0xb0, 70, 3,
+                0xb0, 70, 127, 0xb0, 70, 120, 0xb0, 70, 125, 0xb0, 70, 127,
+            ],
+            &mut |_| {},
+            &mut |a| actions.push(a),
+            &mut learned,
+        );
+        assert_eq!(
+            actions,
+            vec![
+                PanelAction::Enc { enc: 0, clicks: 1 },
+                PanelAction::Enc { enc: 0, clicks: -1 },
+            ],
+        );
     }
 }

@@ -411,7 +411,10 @@ private fun DeviceMappingSheet(midi: MidiHub, source: MidiSource, onDone: () -> 
                         Text("Launchkey Mini MK3 (CC 21–28)")
                     }
                     FilledTonalButton(onClick = { learning = null; update(DeviceMapping.AKAI_MPK_MINI) }) {
-                        Text("Akai MPK Mini (CC 70–77)")
+                        Text("MPK Mini (0–127, CC 70–77)")
+                    }
+                    FilledTonalButton(onClick = { learning = null; update(DeviceMapping.AKAI_MPK_MINI_RELATIVE) }) {
+                        Text("MPK Mini (Relative, CC 70–77)")
                     }
                     if (mapping.mappedCount > 0) {
                         OutlinedButton(onClick = { learning = null; update(DeviceMapping(knobMode = mapping.knobMode, sensitivity = mapping.sensitivity)) }) {
@@ -430,14 +433,22 @@ private fun DeviceMappingSheet(midi: MidiHub, source: MidiSource, onDone: () -> 
                         KnobMode.RelativeBinaryOffset to "Rel (64)",
                     ),
                     mapping.knobMode,
-                ) { update(mapping.copy(knobMode = it)) }
+                ) { mode ->
+                    // Switching to Relative from Fast/Normal defaults to Fine if needed, or keeps user choice
+                    update(mapping.copy(knobMode = mode))
+                }
 
-                if (mapping.knobMode == KnobMode.Absolute) {
-                    Choice(
-                        "Pot sensitivity",
-                        KnobSensitivity.entries.map { it to it.label },
-                        mapping.sensitivity,
-                    ) { update(mapping.copy(sensitivity = it)) }
+                Choice(
+                    "Knob sensitivity (fine tuning)",
+                    KnobSensitivity.UI_ORDER.map { it to it.label },
+                    mapping.sensitivity,
+                ) { update(mapping.copy(sensitivity = it)) }
+                if (mapping.knobMode != KnobMode.Absolute) {
+                    Text(
+                        "Relative mode tames velocity acceleration. Use Fine or Extra fine if menus step too fast on endless encoders.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Tokens.dim,
+                    )
                 }
             }
 
