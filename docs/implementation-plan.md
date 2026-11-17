@@ -44,7 +44,9 @@ engineering milestones and risks.
     LEDs are live.
   - Library: catalog, download, bring-your-own stock firmware, local `.fwsc`, update check.
   - Saves: autosave, Save now, export, share, import, reset, DX7 bank.
-  - MIDI: sources, remap, activity, BLE scan and pair, USB-peripheral hint and guide, Panic.
+  - MIDI: sources, remap, per-device control mapping (MIDI learn, manual CC/Note picker, step
+    buttons for knobs, panel buttons, and presets for Novation Launchkey Mini MK3 and Akai MPK
+    Mini), activity, BLE scan and pair, USB-peripheral hint and guide, Panic.
   - Harbor as a MIDI device (one input port), a foreground playback service, the Audio &
     performance screen, Controls & display, Help, About, onboarding, and the Bluetooth latency
     warning.

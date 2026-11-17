@@ -37,6 +37,7 @@ data class MidiSource(
     val connected: Boolean,
     /** time of the last non-real-time message (System.nanoTime), for the activity dot */
     val lastActivity: Long = 0,
+    val mapping: DeviceMapping = DeviceMapping(),
 )
 
 /**
@@ -153,7 +154,10 @@ class MidiHub(private val context: Context, private val settings: Settings) {
 
     private fun connect(d: MidiDeviceInfo, device: MidiDevice) {
         val source = d.id
-        NativeEngine.midiOpen(source, settings.midiRemap(keyOf(d)))
+        val key = keyOf(d)
+        val mapping = settings.midiMapping(key, nameOf(d))
+        NativeEngine.midiOpen(source, settings.midiRemap(key))
+        NativeEngine.midiMap(source, mapping.toNativeRules(), mapping.knobMode.ordinal, mapping.sensitivity.ordinal)
         val ports = (0 until d.outputPortCount).mapNotNull { device.openOutputPort(it) }
         val receiver = object : MidiReceiver() {
             override fun onSend(msg: ByteArray, offset: Int, count: Int, timestamp: Long) {
@@ -190,6 +194,24 @@ class MidiHub(private val context: Context, private val settings: Settings) {
         publish()
     }
 
+    fun setMapping(source: MidiSource, mapping: DeviceMapping) {
+        settings.setMidiMapping(source.key, mapping)
+        NativeEngine.midiMap(source.id, mapping.toNativeRules(), mapping.knobMode.ordinal, mapping.sensitivity.ordinal)
+        publish()
+    }
+
+    fun startLearn(sourceId: Int) = NativeEngine.midiLearnStart(sourceId)
+    fun stopLearn() = NativeEngine.midiLearnStart(-1)
+
+    /** Poll for a learned message: Note bindings keep their learned channel; CC bindings match any channel by default. */
+    fun pollLearn(): MidiTrigger? {
+        val raw = NativeEngine.midiLearnPoll() ?: return null
+        if (raw.size < 4) return null
+        val kind = if (raw[1] == 0) TriggerKind.Cc else TriggerKind.Note
+        val ch = if (kind == TriggerKind.Note) raw[2].coerceIn(0, 15) else -1
+        return MidiTrigger(kind = kind, number = raw[3].coerceIn(0, 127), channel = ch)
+    }
+
     /** Connect a Bluetooth LE MIDI device found by a scan. */
     fun connectBluetooth(device: BluetoothDevice, done: (Boolean) -> Unit) {
         val m = manager ?: return done(false)
@@ -209,10 +231,12 @@ class MidiHub(private val context: Context, private val settings: Settings) {
     fun publish() {
         _sources.value = infos.values.sortedBy { it.id }.map { d ->
             val key = keyOf(d)
+            val name = nameOf(d)
             MidiSource(
-                id = d.id, key = key, name = nameOf(d), kind = kindOf(d),
+                id = d.id, key = key, name = name, kind = kindOf(d),
                 enabled = settings.midiEnabled(key) ?: true, remap = settings.midiRemap(key),
                 connected = open.containsKey(d.id), lastActivity = activityAt[d.id] ?: 0,
+                mapping = settings.midiMapping(key, name),
             )
         }
     }

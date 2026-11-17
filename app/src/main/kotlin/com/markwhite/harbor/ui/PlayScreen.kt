@@ -273,11 +273,11 @@ private fun LeftCluster(p: PanelState, knob: Dp, spacing: Dp = 8.dp) {
     Column(verticalArrangement = Arrangement.spacedBy(spacing), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(horizontalArrangement = Arrangement.spacedBy(spacing)) {
             MasterPot(p.master, knob, p.prefs, p.input)
-            Encoder(Fm1Panel.SELECT, knob, p.prefs, p.input)
+            Encoder(Fm1Panel.SELECT, knob, p.prefs, p.input, externalClicks = p.leds.encClicks(Fm1Panel.SELECT.id))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(spacing)) {
-            Encoder(Fm1Panel.PRESETS, knob, p.prefs, p.input)
-            Encoder(Fm1Panel.ALGORITHM, knob, p.prefs, p.input)
+            Encoder(Fm1Panel.PRESETS, knob, p.prefs, p.input, externalClicks = p.leds.encClicks(Fm1Panel.PRESETS.id))
+            Encoder(Fm1Panel.ALGORITHM, knob, p.prefs, p.input, externalClicks = p.leds.encClicks(Fm1Panel.ALGORITHM.id))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(spacing)) {
             for (b in Fm1Panel.OCT) PanelButton(b, p.leds[b.id], knob, 40.dp, p.prefs, p.input)
@@ -288,7 +288,7 @@ private fun LeftCluster(p: PanelState, knob: Dp, spacing: Dp = 8.dp) {
 @Composable
 private fun Knobs(p: PanelState, knob: Dp, modifier: Modifier = Modifier) {
     Row(modifier, horizontalArrangement = Arrangement.SpaceEvenly) {
-        for (k in Fm1Panel.KNOBS) Encoder(k, knob, p.prefs, p.input, accent = true)
+        for (k in Fm1Panel.KNOBS) Encoder(k, knob, p.prefs, p.input, accent = true, externalClicks = p.leds.encClicks(k.id))
     }
 }
 
@@ -555,9 +555,11 @@ private fun FaithfulUpper(p: PanelState, ui: UiState) {
         val knobSize = max(s * 72f, 48.dp)
         at(Fm1Panel.POT_X, Fm1Panel.POT_Y + 14f, encSize, encSize + 18.dp) { MasterPot(p.master, encSize, p.prefs, p.input) }
         for (e in listOf(Fm1Panel.SELECT, Fm1Panel.PRESETS, Fm1Panel.ALGORITHM)) {
-            at(e.x, e.y + 14f, encSize, encSize + 18.dp) { Encoder(e, encSize, p.prefs, p.input) }
+            at(e.x, e.y + 14f, encSize, encSize + 18.dp) { Encoder(e, encSize, p.prefs, p.input, externalClicks = p.leds.encClicks(e.id)) }
         }
-        for (k in Fm1Panel.KNOBS) at(k.x, k.y + 14f, max(s * 88f, knobSize), knobSize + 18.dp) { Encoder(k, knobSize, p.prefs, p.input, accent = true) }
+        for (k in Fm1Panel.KNOBS) at(k.x, k.y + 14f, max(s * 88f, knobSize), knobSize + 18.dp) {
+            Encoder(k, knobSize, p.prefs, p.input, accent = true, externalClicks = p.leds.encClicks(k.id))
+        }
         for (b in Fm1Panel.BUTTONS) {
             val pitch = if (b.id < 2) 124f else 58f
             val w = min(max(s * b.w, 40.dp), s * pitch - 3.dp)

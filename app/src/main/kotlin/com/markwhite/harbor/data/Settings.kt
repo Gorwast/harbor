@@ -2,8 +2,11 @@ package com.markwhite.harbor.data
 
 import android.content.Context
 import androidx.core.content.edit
+import com.markwhite.harbor.midi.DeviceMapping
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 enum class KnobGesture { Vertical, Circular, Both }
 enum class KeybedMode { TwoTiers, SingleRow }
@@ -152,9 +155,24 @@ class Settings(context: Context) {
     fun midiRemap(key: String): Int = prefs.getInt("midi.ch.$key", -1)
     fun setMidiRemap(key: String, ch: Int) = prefs.edit { putInt("midi.ch.$key", ch) }
 
+    /** Per-device control mappings; defaults to a built-in preset when a known controller is first seen. */
+    fun midiMapping(key: String, deviceName: String = ""): DeviceMapping {
+        val raw = prefs.getString("midi.map.$key", null)
+            ?: return DeviceMapping.defaultForDevice(deviceName)
+        return runCatching { json.decodeFromString(DeviceMapping.serializer(), raw) }
+            .getOrElse { DeviceMapping.defaultForDevice(deviceName) }
+    }
+
+    fun setMidiMapping(key: String, mapping: DeviceMapping) =
+        prefs.edit { putString("midi.map.$key", json.encodeToString(mapping)) }
+
     fun btWarned(device: String): Boolean = prefs.getBoolean("btWarned.$device", false)
     fun setBtWarned(device: String) = prefs.edit { putBoolean("btWarned.$device", true) }
 
     fun tipShown(tip: String): Boolean = prefs.getBoolean("tip.$tip", false)
     fun setTipShown(tip: String) = prefs.edit { putBoolean("tip.$tip", true) }
+
+    companion object {
+        private val json = Json { ignoreUnknownKeys = true }
+    }
 }

@@ -8,12 +8,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use jni::objects::{JByteArray, JByteBuffer, JClass, JDoubleArray, JFloatArray, JObject, JString};
-use jni::sys::{jboolean, jbyteArray, jint, jlong, jlongArray, jobjectArray, jstring, JNI_FALSE, JNI_TRUE};
+use jni::objects::{JByteArray, JByteBuffer, JClass, JDoubleArray, JFloatArray, JIntArray, JObject, JString};
+use jni::sys::{jboolean, jbyteArray, jint, jintArray, jlong, jlongArray, jobjectArray, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 
 use harbor_engine::engine::{AudioOut, Boot, Cmd, Engine, RunState, WorkReport, LCD_PIXELS};
-use harbor_engine::midi::{panic_messages, MidiParser};
+use harbor_engine::midi::{
+    panic_messages, ControlTarget, KnobMode, MappingRule, MidiParser, PanelAction, Sensitivity,
+    Trigger, TriggerKind,
+};
 use harbor_engine::recorder::Recorder;
 use harbor_engine::savefile;
 use harbor_engine::Board;
@@ -27,6 +30,10 @@ struct Host {
     audio: audio::Output,
     parsers: HashMap<i32, MidiParser>,
     recorder: Option<Recorder>,
+    pot: u16,
+    enc_clicks: [i32; 7],
+    learn_source: i32,
+    learned: Option<[i32; 4]>,
 }
 
 static HOST: Mutex<Option<Host>> = Mutex::new(None);
@@ -108,7 +115,17 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_start(
         let (engine, out) = Engine::start(lead.max(64) as usize, engine_thread_setup);
         let out = Arc::new(Mutex::new(out));
         let audio = audio::Output::new(out.clone(), low_latency != 0);
-        *h = Some(Host { engine, out, audio, parsers: HashMap::new(), recorder: None });
+        *h = Some(Host {
+            engine,
+            out,
+            audio,
+            parsers: HashMap::new(),
+            recorder: None,
+            pot: 512,
+            enc_clicks: [0; 7],
+            learn_source: -1,
+            learned: None,
+        });
     }
     let host = h.as_mut().unwrap();
     host.audio.ensure_running();
@@ -185,7 +202,11 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_enc(_env: J
 
 #[no_mangle]
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_pot(_env: JNIEnv, _: JClass, value: jint) {
-    if let Some(h) = host().as_ref() { h.engine.send(Cmd::Pot(value.clamp(0, 1023) as u16)) }
+    if let Some(h) = host().as_mut() {
+        let v = value.clamp(0, 1023) as u16;
+        h.pot = v;
+        h.engine.send(Cmd::Pot(v));
+    }
 }
 
 #[no_mangle]
@@ -221,6 +242,69 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_midiRemap(_
     }
 }
 
+/// Set the control mapping rules and knob behaviour for `source`.
+/// `rules` is packed in 5-int tuples: `[trigger_kind, number, channel, target_kind, target_arg]`.
+#[no_mangle]
+pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_midiMap(
+    env: JNIEnv, _: JClass, source: jint, rules: JIntArray, knob_mode: jint, sensitivity: jint,
+) {
+    let len = if rules.is_null() { 0 } else { env.get_array_length(&rules).unwrap_or(0).max(0) as usize };
+    let mut raw = vec![0i32; len];
+    if len > 0 {
+        let _ = env.get_int_array_region(&rules, 0, &mut raw);
+    }
+    let parsed: Vec<MappingRule> = raw
+        .chunks_exact(5)
+        .filter_map(|c| {
+            let kind = match c[0] {
+                0 => TriggerKind::Cc,
+                1 => TriggerKind::Note,
+                _ => return None,
+            };
+            let number = (c[1].clamp(0, 127)) as u8;
+            let channel = (0..16).contains(&c[2]).then_some(c[2] as u8);
+            let target = match c[3] {
+                0 => ControlTarget::Enc((c[4] & 0x7f) as u8),
+                1 => ControlTarget::EncStep {
+                    enc: (c[4] & 0xff) as u8,
+                    clicks: c[4] >> 8,
+                },
+                2 => ControlTarget::Pot,
+                3 => ControlTarget::PotStep(c[4].clamp(-1023, 1023) as i16),
+                4 => ControlTarget::Button((c[4] & 0x7f) as u8),
+                _ => return None,
+            };
+            Some(MappingRule {
+                trigger: Trigger { kind, number, channel },
+                target,
+            })
+        })
+        .collect();
+    if let Some(h) = host().as_mut() {
+        let p = h.parsers.entry(source).or_default();
+        p.set_mapping(parsed, KnobMode::from_i32(knob_mode), Sensitivity::from_i32(sensitivity));
+    }
+}
+
+/// Start listening for the next CC or Note-On on `source` (`-1` cancels).
+#[no_mangle]
+pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_midiLearnStart(_env: JNIEnv, _: JClass, source: jint) {
+    if let Some(h) = host().as_mut() {
+        h.learn_source = source;
+        h.learned = None;
+    }
+}
+
+/// Take the message captured since `midiLearnStart`: `[source, kind, channel, number]`, or null.
+#[no_mangle]
+pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_midiLearnPoll(env: JNIEnv, _: JClass) -> jintArray {
+    let got = host().as_mut().and_then(|h| h.learned.take());
+    let Some(vals) = got else { return std::ptr::null_mut() };
+    let Ok(arr) = env.new_int_array(4) else { return std::ptr::null_mut() };
+    let _ = env.set_int_array_region(&arr, 0, &vals);
+    arr.into_raw()
+}
+
 /// Bytes from a source (`MidiReceiver.onSend`), stamped with its CLOCK_MONOTONIC timestamp.
 /// Returns true when a message other than real-time went out (the activity dot).
 #[no_mangle]
@@ -233,32 +317,68 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_midiData(
     let now = now_ns();
     let mut h = host();
     let Some(h) = h.as_mut() else { return JNI_FALSE };
-    let Host { engine, parsers, .. } = h;
+    let Host { engine, parsers, pot, enc_clicks, learn_source, learned, .. } = h;
     let parser = parsers.entry(source).or_default();
-    let active = parser.feed(chunk, &mut |m| engine.midi(m, timestamp.max(0) as u64, now));
+    let mut got_learn = None;
+    let active = parser.feed_mapped(
+        chunk,
+        &mut |m| engine.midi(m, timestamp.max(0) as u64, now),
+        &mut |action| match action {
+            PanelAction::Enc { enc, clicks } => {
+                engine.send(Cmd::Enc { enc, clicks });
+                if (enc as usize) < enc_clicks.len() {
+                    enc_clicks[enc as usize] = enc_clicks[enc as usize].wrapping_add(clicks);
+                }
+            }
+            PanelAction::Pot(v) => {
+                *pot = v.min(1023);
+                engine.send(Cmd::Pot(*pot));
+            }
+            PanelAction::PotDelta(d) => {
+                *pot = (*pot as i32 + d as i32).clamp(0, 1023) as u16;
+                engine.send(Cmd::Pot(*pot));
+            }
+            PanelAction::Key { id, down } => {
+                engine.send(Cmd::Key { id, down });
+            }
+        },
+        &mut got_learn,
+    );
+    if *learn_source == source {
+        if let Some((kind, ch, num)) = got_learn {
+            *learned = Some([source, kind as i32, ch as i32, num as i32]);
+            *learn_source = -1;
+        }
+    }
     if active { JNI_TRUE } else { JNI_FALSE }
 }
 
-/// A source went away: release the notes it held.
+/// A source went away: release the notes and panel buttons it held.
 #[no_mangle]
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_midiClose(_env: JNIEnv, _: JClass, source: jint) {
     if let Some(h) = host().as_mut() {
         if let Some(mut p) = h.parsers.remove(&source) {
             let now = now_ns();
             let engine = &h.engine;
-            p.release_all(&mut |m| engine.midi(m, 0, now));
+            p.release_all_with_panel(
+                &mut |m| engine.midi(m, 0, now),
+                &mut |a| if let PanelAction::Key { id, down } = a { engine.send(Cmd::Key { id, down }); },
+            );
         }
     }
 }
 
-/// All notes off on every channel, and every source's held notes released.
+/// All notes off on every channel, and every source's held notes and panel buttons released.
 #[no_mangle]
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_panic(_env: JNIEnv, _: JClass) {
     if let Some(h) = host().as_mut() {
         let now = now_ns();
         let Host { engine, parsers, .. } = h;
         for p in parsers.values_mut() {
-            p.release_all(&mut |m| engine.midi(m, 0, now));
+            p.release_all_with_panel(
+                &mut |m| engine.midi(m, 0, now),
+                &mut |a| if let PanelAction::Key { id, down } = a { engine.send(Cmd::Key { id, down }); },
+            );
         }
         for m in panic_messages() {
             engine.midi(&m, 0, now);
@@ -296,6 +416,24 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_leds(env: J
     if let Some(h) = host().as_ref() {
         let leds = h.engine.shared.view.lock().unwrap().leds;
         let _ = env.set_float_array_region(&out, 0, &leds);
+    }
+}
+
+/// External MIDI panel state (8 ints): cumulative clicks for encoders 0..6, then MASTER pot 0..1023.
+#[no_mangle]
+pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_panelControls(env: JNIEnv, _: JClass, out: JIntArray) {
+    if let Some(h) = host().as_ref() {
+        let vals = [
+            h.enc_clicks[0],
+            h.enc_clicks[1],
+            h.enc_clicks[2],
+            h.enc_clicks[3],
+            h.enc_clicks[4],
+            h.enc_clicks[5],
+            h.enc_clicks[6],
+            h.pot as i32,
+        ];
+        let _ = env.set_int_array_region(&out, 0, &vals);
     }
 }
 

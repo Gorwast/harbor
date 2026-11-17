@@ -31,6 +31,12 @@ object NativeEngine {
     /** A MIDI source opened; [remap]: channel 0..15 for its channel messages, or -1. */
     @JvmStatic external fun midiOpen(source: Int, remap: Int)
     @JvmStatic external fun midiRemap(source: Int, remap: Int)
+    /** Set per-source control mappings (packed 5-int tuples) and knob behaviour. */
+    @JvmStatic external fun midiMap(source: Int, rules: IntArray, knobMode: Int, sensitivity: Int)
+    /** Listen for the next CC or Note-On on [source] (-1 cancels). */
+    @JvmStatic external fun midiLearnStart(source: Int)
+    /** [source, kind (0 CC, 1 Note), channel (0..15), number (0..127)], or null. */
+    @JvmStatic external fun midiLearnPoll(): IntArray?
     /** Bytes from a source with their `System.nanoTime` timestamp. True: not only real-time bytes. */
     @JvmStatic external fun midiData(source: Int, data: ByteArray, offset: Int, count: Int, timestamp: Long): Boolean
     @JvmStatic external fun midiClose(source: Int)
@@ -39,6 +45,8 @@ object NativeEngine {
     /** Copy the LCD (240x240 RGB565 LE) into [buf] (direct, 115200 bytes) unless its revision is [since]. Returns the revision now in [buf]. */
     @JvmStatic external fun lcd(buf: ByteBuffer, since: Long): Long
     @JvmStatic external fun leds(out: FloatArray)
+    /** External MIDI panel state (8 ints): cumulative clicks for encoders 0..6, then MASTER pot 0..1023. */
+    @JvmStatic external fun panelControls(out: IntArray)
     @JvmStatic external fun status(out: DoubleArray)
     @JvmStatic external fun error(): String
     @JvmStatic external fun flashSectors(): ByteArray?

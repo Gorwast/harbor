@@ -278,6 +278,17 @@ class Harbor(
         if (started) NativeEngine.leds(out)
     }
 
+    /** Poll external MIDI panel controls (`out` has 8 ints: encoders 0..6, then MASTER 0..1023). */
+    fun pollPanelControls(out: IntArray) {
+        if (!started) return
+        NativeEngine.panelControls(out)
+        val pot = out[7].coerceIn(0, 1023)
+        if (pot != _master.value) {
+            _master.value = pot
+            _docked.value?.let { settings.setMaster(it.pkg.sha, pot) }
+        }
+    }
+
     // -------------------------------------------------------------------------------- clock
 
     /** Set the clock by hand ([auto] false), or go back to the automatic clock from 240 MHz. */

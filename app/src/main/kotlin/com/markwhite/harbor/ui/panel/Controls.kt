@@ -129,13 +129,30 @@ private fun rememberHaptics(): Haptics {
 
 /** An endless, detented, relative encoder (ui-spec §7.1). The value lives on the LCD. */
 @Composable
-fun Encoder(enc: Fm1Panel.Enc, size: Dp, prefs: PanelPrefs, input: PanelInput, modifier: Modifier = Modifier, showLabel: Boolean = true, accent: Boolean = false) {
+fun Encoder(
+    enc: Fm1Panel.Enc,
+    size: Dp,
+    prefs: PanelPrefs,
+    input: PanelInput,
+    modifier: Modifier = Modifier,
+    showLabel: Boolean = true,
+    accent: Boolean = false,
+    externalClicks: Int = 0,
+) {
     val haptics = rememberHaptics()
     val slop = LocalViewConfiguration.current.touchSlop
     val pxPerDetent = with(LocalDensity.current) { prefs.dpPerDetent.dp.toPx() }
     var angle by remember { mutableFloatStateOf(0f) }
     var turnedAt by remember { mutableLongStateOf(0L) }
     var glow by remember { mutableStateOf(false) }
+    var lastExternal by remember { mutableIntStateOf(externalClicks) }
+    if (externalClicks != lastExternal) {
+        val delta = externalClicks - lastExternal
+        lastExternal = externalClicks
+        angle += 15f * delta
+        turnedAt = System.nanoTime()
+        glow = true
+    }
     val p by rememberUpdatedState(prefs)
     fun turn(clicks: Int) {
         if (clicks == 0) return
@@ -421,15 +438,20 @@ fun LcdView(harbor: Harbor, size: Dp, smooth: Boolean, modifier: Modifier = Modi
 }
 
 /**
- * The 41 LED lines (buttons 0..13, keys 14..40). Each is its own state, so a change redraws only
- * what it lights, never the whole panel.
+ * The 41 LED lines (buttons 0..13, keys 14..40) and external MIDI encoder click counters (0..6).
+ * Each is its own state, so a change redraws only what it affects, never the whole panel.
  */
 @Stable
 class PanelLeds {
     private val levels = Array(41) { mutableFloatStateOf(0f) }
+    private val encoders = Array(7) { mutableIntStateOf(0) }
     operator fun get(i: Int): Float = levels.getOrNull(i)?.floatValue ?: 0f
+    fun encClicks(id: Int): Int = encoders.getOrNull(id)?.intValue ?: 0
     internal fun set(i: Int, v: Float) {
         if (levels[i].floatValue != v) levels[i].floatValue = v
+    }
+    internal fun setEnc(id: Int, clicks: Int) {
+        if (id in encoders.indices && encoders[id].intValue != clicks) encoders[id].intValue = clicks
     }
 }
 
@@ -439,9 +461,17 @@ fun rememberLeds(harbor: Harbor): PanelLeds {
     val leds = remember { PanelLeds() }
     LaunchedEffect(harbor) {
         val buf = FloatArray(41)
+        val ctrl = IntArray(8)
+        var synced = false
         while (true) {
             harbor.pollLeds(buf)
             for (i in buf.indices) leds.set(i, if (buf[i] < 0.04f) 0f else (buf[i] * 16).roundToInt() / 16f)
+            if (!synced) {
+                ctrl[7] = harbor.master.value
+                synced = true
+            }
+            harbor.pollPanelControls(ctrl)
+            for (i in 0 until 7) leds.setEnc(i, ctrl[i])
             delay(33)
         }
     }
