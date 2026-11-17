@@ -47,7 +47,7 @@ import kotlin.math.log10
 @Composable
 fun AudioScreen(app: HarborApp, ui: UiState, onBack: () -> Unit) {
     val context = LocalContext.current
-    val s = ui.status
+    val s by app.harbor.status.collectAsState()
     val buffer by app.settings.bufferMode.collectAsState()
     val background by app.settings.keepPlayingInBackground.collectAsState()
     val screenOn by app.settings.keepScreenOn.collectAsState()
@@ -89,7 +89,7 @@ fun AudioScreen(app: HarborApp, ui: UiState, onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall, color = Tokens.dim)
             OutlinedButton(onClick = {
                 val cm = context.getSystemService(ClipboardManager::class.java)
-                cm.setPrimaryClip(ClipData.newPlainText("Harbor report", report(context, ui, history)))
+                cm.setPrimaryClip(ClipData.newPlainText("Harbor report", report(context, ui, s, history)))
             }) { Text("Copy a report") }
         }
 
@@ -149,8 +149,7 @@ fun bluetoothRoute(context: android.content.Context, id: Int): String? {
     return if (d.type in setOf(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLE_SPEAKER)) d.productName.toString() else null
 }
 
-private fun report(context: android.content.Context, ui: UiState, history: List<String>): String {
-    val s = ui.status
+private fun report(context: android.content.Context, ui: UiState, s: EngineStatus, history: List<String>): String {
     return buildString {
         appendLine("Harbor report")
         appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL} (${Build.SOC_MODEL}), Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")

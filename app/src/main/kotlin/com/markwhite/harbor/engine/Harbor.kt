@@ -106,7 +106,13 @@ class Harbor(
      * Harbor is in front (the process lifecycle's resumed state). Behind another app, a share sheet
      * or the shade, Android gives it less CPU: slowness then says nothing about this device.
      */
-    @Volatile var onScreen = true
+    @Volatile var onScreen = false
+        private set
+
+    fun setOnScreen(front: Boolean) {
+        onScreen = front
+        if (started) NativeEngine.setBackground(!front)
+    }
 
     @Volatile private var started = false
     @Volatile private var currentBoot = 0L
@@ -153,6 +159,7 @@ class Harbor(
         if (started) return
         started = true
         NativeEngine.start(leadFrames(), settings.bufferMode.value == BufferMode.LowLatency)
+        NativeEngine.setBackground(!onScreen)
         audio.requestAudioFocus(focus)
         context.registerReceiver(noisy, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY), Context.RECEIVER_NOT_EXPORTED)
         scope.launch { statusLoop() }
@@ -525,6 +532,7 @@ class Harbor(
                     EventLog.w("audio output closed (route change or error): reopening (try $audioRetries)")
                 if (audioRetries == 5) _events.tryEmit(HarborEvent.Message("Harbor can't open the audio output. Try another output, or restart the phone."))
                 NativeEngine.start(leadFrames(), settings.bufferMode.value == BufferMode.LowLatency)
+        NativeEngine.setBackground(!onScreen)
             }
             if (d != null && s.bootId == currentBoot) {
                 if (s.state != lastState) {

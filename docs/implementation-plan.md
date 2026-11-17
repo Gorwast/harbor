@@ -221,6 +221,16 @@ engineering milestones and risks.
   firmware tests; Kawa now boots and draws (silent on a single key, but it's a tracker). A sweep
   of 91 packages (the Hub's, older and newer SLOOPs, Clipper, LCD-4, SLOOP ALG) halts only on CTL-1,
   MC-1 and 386DX, as before. Not yet upstream.
+- [x] Performance & responsiveness pass (2026-11-17): isolated `EngineStatus` collection from
+  `HarborRoot` / `PlayScreen` into leaf composables (`LoadChip`, `PerfBanner`, `Rec`,
+  `AudioScreen`), added a zero-allocation stack fast path to `NativeEngine_midiData`, added an
+  atomic `lcd_rev` pre-check + off-mutex LCD diff in `engine.rs`/`lib.rs`, added adaptive ring sleep
+  pacing, and tightened the ADPF target work duration in the background (`hint.rs` via
+  `APerformanceHint_updateTargetWorkDuration`). Also fixed a Pixel 7 Pro audio-burst mismatch where
+  AAudio's 96 kHz / 1920-frame shared burst (`882` frames @ 44.1 kHz) exceeded the hardcoded `768`
+  `LowLatency` lead, causing ~8,600 late frames/sec; `update_lead_for_audio` now floors `lead` at
+  `2 × burst` (`1764` frames), eliminating steady-state dropouts (`late 0` in `logcat`, `gfxinfo`
+  90th percentile 7–9 ms).
 
 ---
 

@@ -13,7 +13,10 @@ use harbor_engine::engine::REPORT_EVERY as WINDOW;
 
 /// The share of real time the engine may spend emulating before the system is asked for more.
 #[cfg(target_os = "android")]
-const TARGET_LOAD: f64 = 0.6;
+const TARGET_LOAD_FG: f64 = 0.6;
+/// Tighter target in the background so Android keeps the engine off throttled little cores.
+#[cfg(target_os = "android")]
+const TARGET_LOAD_BG: f64 = 0.4;
 
 #[cfg(target_os = "android")]
 mod sys {
@@ -22,12 +25,14 @@ mod sys {
     pub type GetManager = unsafe extern "C" fn() -> *mut c_void;
     pub type CreateSession = unsafe extern "C" fn(*mut c_void, *const i32, usize, i64) -> *mut c_void;
     pub type Report = unsafe extern "C" fn(*mut c_void, i64) -> i32;
+    pub type UpdateTarget = unsafe extern "C" fn(*mut c_void, i64) -> i32;
     pub type Close = unsafe extern "C" fn(*mut c_void);
 
     pub struct Api {
         pub get_manager: GetManager,
         pub create: CreateSession,
         pub report: Report,
+        pub update_target: Option<UpdateTarget>,
         pub close: Close,
     }
 
@@ -48,6 +53,7 @@ mod sys {
                 get_manager: sym(lib, c"APerformanceHint_getManager")?,
                 create: sym(lib, c"APerformanceHint_createSession")?,
                 report: sym(lib, c"APerformanceHint_reportActualWorkDuration")?,
+                update_target: sym(lib, c"APerformanceHint_updateTargetWorkDuration"),
                 close: sym(lib, c"APerformanceHint_closeSession")?,
             })
         }
@@ -60,6 +66,8 @@ pub struct Hint {
     api: sys::Api,
     #[cfg(target_os = "android")]
     session: *mut std::ffi::c_void,
+    #[cfg(target_os = "android")]
+    background: bool,
 }
 
 impl Hint {
@@ -67,7 +75,7 @@ impl Hint {
         #[cfg(target_os = "android")]
         {
             let api = sys::load()?;
-            let target = (WINDOW.as_nanos() as f64 * TARGET_LOAD) as i64;
+            let target = (WINDOW.as_nanos() as f64 * TARGET_LOAD_FG) as i64;
             // SAFETY: NDK calls with a valid tid array; a null session means no ADPF here.
             unsafe {
                 let manager = (api.get_manager)();
@@ -81,7 +89,7 @@ impl Hint {
                     return None;
                 }
                 log::info!("engine thread: performance hint session, target {} us per {} ms", target / 1000, WINDOW.as_millis());
-                Some(Hint { api, session })
+                Some(Hint { api, session, background: false })
             }
         }
         #[cfg(not(target_os = "android"))]
@@ -89,9 +97,18 @@ impl Hint {
     }
 
     /// The engine spent `busy` making `audio` worth of output.
-    pub fn report(&mut self, busy: Duration, audio: Duration) {
+    pub fn report(&mut self, busy: Duration, audio: Duration, background: bool) {
         #[cfg(target_os = "android")]
         {
+            if background != self.background {
+                self.background = background;
+                if let Some(update) = self.api.update_target {
+                    let load = if background { TARGET_LOAD_BG } else { TARGET_LOAD_FG };
+                    let target = (WINDOW.as_nanos() as f64 * load) as i64;
+                    // SAFETY: session is live until drop.
+                    unsafe { let _ = update(self.session, target); }
+                }
+            }
             if audio.is_zero() {
                 return;
             }
@@ -101,7 +118,7 @@ impl Hint {
             unsafe { (self.api.report)(self.session, actual.max(1.0) as i64) };
         }
         #[cfg(not(target_os = "android"))]
-        let _ = (busy, audio);
+        let _ = (busy, audio, background);
     }
 }
 

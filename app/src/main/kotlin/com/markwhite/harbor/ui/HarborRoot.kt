@@ -41,6 +41,9 @@ import com.markwhite.harbor.ui.screens.MidiScreen
 import com.markwhite.harbor.ui.screens.Onboarding
 import com.markwhite.harbor.ui.screens.SavesScreen
 import com.markwhite.harbor.ui.screens.SettingsHub
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 enum class Screen { Play, Library, Saves, Midi, Audio, Controls, Help, About, Settings }
 
@@ -48,7 +51,7 @@ enum class Screen { Play, Library, Saves, Midi, Audio, Controls, Help, About, Se
 data class UiState(
     val phase: Phase,
     val docked: Docked?,
-    val status: EngineStatus,
+    val statusFlow: StateFlow<EngineStatus>,
     val save: SaveState,
     val midiActivity: Long,
     val midiSources: Int,
@@ -97,7 +100,6 @@ fun HarborRoot(app: HarborApp, pending: PendingOpen?, onPendingHandled: () -> Un
 
     val phase by harbor.phase.collectAsState()
     val docked by harbor.docked.collectAsState()
-    val status by harbor.status.collectAsState()
     val save by harbor.save.collectAsState()
     val activity by app.midi.activity.collectAsState()
     val sources by app.midi.sources.collectAsState()
@@ -106,7 +108,7 @@ fun HarborRoot(app: HarborApp, pending: PendingOpen?, onPendingHandled: () -> Un
     val clients by HarborMidiService.clients.collectAsState()
     val recording by harbor.recording.collectAsState()
     val connected = sources.filter { it.enabled && it.connected }
-    val ui = UiState(phase, docked, status, save, activity, connected.size + clients, connected.map { it.name } + List(clients) { "An app on this phone" },
+    val ui = UiState(phase, docked, harbor.status, save, activity, connected.size + clients, connected.map { it.name } + List(clients) { "An app on this phone" },
         usbHint, buffer, recording != null, ::go)
 
     val prefs = PanelPrefs(
@@ -213,9 +215,11 @@ fun HarborRoot(app: HarborApp, pending: PendingOpen?, onPendingHandled: () -> Un
     // Bluetooth output: warn once per device about its delay (ui-spec §10.2)
     val btWarning by s.btWarning.collectAsState()
     var btDevice by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(status.deviceId, btWarning) {
-        val name = com.markwhite.harbor.ui.screens.bluetoothRoute(context, status.deviceId)
-        btDevice = if (btWarning && name != null && !s.btWarned(name)) name else null
+    LaunchedEffect(btWarning) {
+        harbor.status.map { it.deviceId }.distinctUntilChanged().collect { deviceId ->
+            val name = com.markwhite.harbor.ui.screens.bluetoothRoute(context, deviceId)
+            btDevice = if (btWarning && name != null && !s.btWarned(name)) name else null
+        }
     }
     btDevice?.let { name ->
         androidx.compose.material3.AlertDialog(

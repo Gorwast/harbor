@@ -38,6 +38,7 @@ import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,6 +57,7 @@ import com.markwhite.harbor.engine.EngineStatus
 import com.markwhite.harbor.engine.SaveState
 import com.markwhite.harbor.ui.theme.Tokens
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import java.text.DateFormat
 import java.util.Date
 
@@ -115,10 +117,11 @@ fun MidiChip(activity: Long, sources: Int, hint: Boolean, compact: Boolean = fal
 
 /**
  * "240 MHz · 42%": amber over 80% of the audio time, red while dropping out. [compact] (a phone
- * in portrait): one of the two.
+ * in portrait): one of the two. Collects [statusFlow] locally so parents never recompose at 10 Hz.
  */
 @Composable
-fun LoadChip(s: EngineStatus, compact: Boolean = false, onClick: () -> Unit) {
+fun LoadChip(statusFlow: StateFlow<EngineStatus>, compact: Boolean = false, onClick: () -> Unit) {
+    val s by statusFlow.collectAsState()
     val load = (s.load * 100).toInt()
     val color = when {
         s.late > 0 -> Tokens.error

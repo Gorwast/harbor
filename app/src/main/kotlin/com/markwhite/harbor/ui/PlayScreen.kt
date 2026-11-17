@@ -63,9 +63,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -123,7 +126,7 @@ fun StatusChips(ui: UiState, go: (Screen) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
         SaveChip(ui.save) { go(Screen.Saves) }
         MidiChip(ui.midiActivity, ui.midiSources, ui.usbHint, compact = true) { go(Screen.Midi) }
-        LoadChip(ui.status) { go(Screen.Audio) }
+        LoadChip(ui.statusFlow) { go(Screen.Audio) }
     }
 }
 
@@ -156,11 +159,6 @@ fun OverflowMenu(go: (Screen) -> Unit, onPerformanceMode: (() -> Unit)?) {
 
 @Composable
 fun PlayScreen(ui: UiState, panel: PanelState, mode: LayoutMode, go: (Screen) -> Unit, performance: Boolean, setPerformance: (Boolean) -> Unit) {
-    val perf = remember { PerfWatch() }
-    var problem by remember { mutableStateOf(PerfWatch.Problem.None) }
-    LaunchedEffect(ui.status) {
-        problem = perf.update(ui.status, ui.bufferMode == BufferMode.LowLatency, System.currentTimeMillis())
-    }
     val compact = mode == LayoutMode.CompactPortrait || mode == LayoutMode.CompactLandscape
     // the case on a cached layer of its own, behind everything (as a parent's background it would
     // be redrawn with every frame of the LCD)
@@ -192,7 +190,7 @@ fun PlayScreen(ui: UiState, panel: PanelState, mode: LayoutMode, go: (Screen) ->
                     LayoutMode.Expanded -> ExpandedPanel(panel, ui)
                 }
                 // over the panel, not above it: the panel keeps its size when it comes and goes
-            if (!performance) PerfBanner(problem, ui, panel.harbor, go, Modifier.align(Alignment.TopCenter).padding(horizontal = 10.dp, vertical = 6.dp))
+            if (!performance) PerfBanner(ui, panel.harbor, go, Modifier.align(Alignment.TopCenter).padding(horizontal = 10.dp, vertical = 6.dp))
             if (performance && mode != LayoutMode.CompactLandscape) {
                     TextButton(onClick = { setPerformance(false) }, Modifier.align(Alignment.TopEnd)) { Text("Exit performance mode") }
                 }
@@ -204,8 +202,14 @@ fun PlayScreen(ui: UiState, panel: PanelState, mode: LayoutMode, go: (Screen) ->
 }
 
 @Composable
-private fun Rec(ui: UiState, harbor: Harbor) =
-    RecordButton(ui.recording, ui.status.recFrames, ui.docked != null, harbor::startRecording, harbor::stopRecording)
+private fun Rec(ui: UiState, harbor: Harbor) {
+    val recFrames by if (ui.recording) {
+        remember(ui.statusFlow) { ui.statusFlow.map { it.recFrames }.distinctUntilChanged() }.collectAsState(-1L)
+    } else {
+        remember { mutableLongStateOf(-1L) }
+    }
+    RecordButton(ui.recording, recFrames, ui.docked != null, harbor::startRecording, harbor::stopRecording)
+}
 
 /** The Play screen's bar: a dark card sitting on the case. */
 @Composable
@@ -230,19 +234,27 @@ private fun HeaderCard(modifier: Modifier = Modifier, content: @Composable RowSc
 private fun StatusChipsCompact(ui: UiState, go: (Screen) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
         MidiChip(ui.midiActivity, ui.midiSources, ui.usbHint, compact = true) { go(Screen.Midi) }
-        LoadChip(ui.status, compact = true) { go(Screen.Audio) }
+        LoadChip(ui.statusFlow, compact = true) { go(Screen.Audio) }
     }
 }
 
 @Composable
-private fun PerfBanner(problem: PerfWatch.Problem, ui: UiState, harbor: Harbor, go: (Screen) -> Unit, modifier: Modifier) {
+private fun PerfBanner(ui: UiState, harbor: Harbor, go: (Screen) -> Unit, modifier: Modifier) {
+    val perf = remember { PerfWatch() }
+    var problem by remember { mutableStateOf(PerfWatch.Problem.None) }
+    LaunchedEffect(ui.statusFlow, ui.bufferMode) {
+        ui.statusFlow.collect { s ->
+            problem = perf.update(s, ui.bufferMode == BufferMode.LowLatency, System.currentTimeMillis())
+        }
+    }
     var dismissed by remember { mutableStateOf(PerfWatch.Problem.None) }
-    if (problem == dismissed) return
+    if (problem == dismissed || problem == PerfWatch.Problem.None) return
+    val status by ui.statusFlow.collectAsState()
     val name = ui.shortName
     val (text, action) = when (problem) {
         PerfWatch.Problem.None -> return
         PerfWatch.Problem.CantKeepUp ->
-            if (!ui.status.autoClock) "$name can't keep up at ${ui.status.mhz} MHz on this phone." to ("Use automatic clock" to { harbor.setClock(240, true) })
+            if (!status.autoClock) "$name can't keep up at ${status.mhz} MHz on this phone." to ("Use automatic clock" to { harbor.setClock(240, true) })
             else "Even at 120 MHz this phone can't run $name in real time. The desktop version of the emulator will play it." to ("Details" to { go(Screen.Audio) })
         PerfWatch.Problem.Buffer -> "The sound drops out now and then. A larger audio buffer smooths it over but adds a little delay to the keys." to
             ("Use a larger buffer" to { harbor.setBufferMode(BufferMode.Stable) })
@@ -319,7 +331,11 @@ private fun LcdScreen(p: PanelState, ui: UiState, size: Dp) {
 @Composable
 private fun LcdOverlay(ui: UiState, harbor: Harbor) {
     val phase = ui.phase
-    if (phase == Phase.Running || phase == Phase.Booting && ui.status.state.ordinal == 1) return
+    if (phase == Phase.Running) return
+    if (phase == Phase.Booting) {
+        val running by remember(ui.statusFlow) { ui.statusFlow.map { it.state.ordinal == 1 }.distinctUntilChanged() }.collectAsState(false)
+        if (running) return
+    }
     Column(
         Modifier.fillMaxSize().background(Color(0xE6101113)).padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
@@ -429,8 +445,7 @@ private fun CompactLandscapePanel(p: PanelState, ui: UiState, go: (Screen) -> Un
                         Text(ui.shortName, style = Display.copy(fontSize = 19.sp), maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { go(Screen.Library) }.padding(horizontal = 8.dp, vertical = 4.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (!ui.recording) Text("${ui.status.mhz} MHz", style = MaterialTheme.typography.labelSmall, color = Tokens.dim,
-                                modifier = Modifier.clickable { go(Screen.Audio) }.padding(4.dp))
+                            if (!ui.recording) CompactClockLabel(ui.statusFlow) { go(Screen.Audio) }
                             Spacer(Modifier.weight(1f))
                             Rec(ui, p.harbor)
                             OverflowMenu(go) { setPerformance(true) }
@@ -615,6 +630,13 @@ private fun PaneCard(title: String, modifier: Modifier, content: @Composable () 
 }
 
 @Composable
+private fun CompactClockLabel(statusFlow: kotlinx.coroutines.flow.StateFlow<com.markwhite.harbor.engine.EngineStatus>, onClick: () -> Unit) {
+    val mhz by remember(statusFlow) { statusFlow.map { it.mhz }.distinctUntilChanged() }.collectAsState(240)
+    Text("$mhz MHz", style = MaterialTheme.typography.labelSmall, color = Tokens.dim,
+        modifier = Modifier.clickable(onClick = onClick).padding(4.dp))
+}
+
+@Composable
 private fun NowDockedCard(ui: UiState, go: (Screen) -> Unit, modifier: Modifier) {
     PaneCard("Now docked", modifier) {
         val d = ui.docked
@@ -622,11 +644,12 @@ private fun NowDockedCard(ui: UiState, go: (Screen) -> Unit, modifier: Modifier)
             Text("Nothing docked yet")
             OutlinedButton(onClick = { go(Screen.Library) }) { Text("Browse firmwares") }
         } else {
+            val clock by remember(ui.statusFlow) { ui.statusFlow.map { it.mhz to it.autoClock }.distinctUntilChanged() }.collectAsState(240 to true)
             Text(d.pkg.title, style = MaterialTheme.typography.titleMedium)
             d.entry?.let { Text("${it.author} · ${it.license}", style = MaterialTheme.typography.bodySmall, color = Tokens.dim) }
             d.entry?.about?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 4, overflow = TextOverflow.Ellipsis) }
             d.entry?.id?.let { id -> FirmwareNotes.midiHint(id)?.let { Text("MIDI: $it", style = MaterialTheme.typography.bodySmall, color = Tokens.dim) } }
-            Text("Clock ${ui.status.mhz} MHz" + if (ui.status.autoClock) " (automatic)" else "", style = MaterialTheme.typography.bodySmall)
+            Text("Clock ${clock.first} MHz" + if (clock.second) " (automatic)" else "", style = MaterialTheme.typography.bodySmall)
             TextButton(onClick = { go(Screen.Library) }) { Text("Change firmware") }
         }
     }

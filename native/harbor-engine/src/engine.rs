@@ -39,9 +39,9 @@ const RING: usize = 16_384;
 /// The 240x240 RGB565 screen (fm1-soc lcd.rs).
 pub const LCD_PIXELS: usize = 240 * 240;
 const CHUNK: u32 = 20_000;
-/// Told `(busy, audio)`: the engine spent `busy` making `audio` worth of output (about
-/// [`REPORT_EVERY`] at a time). For performance hints.
-pub type WorkReport = Box<dyn FnMut(Duration, Duration)>;
+/// Told `(busy, audio, background)`: the engine spent `busy` making `audio` worth of output
+/// (about [`REPORT_EVERY`] at a time), and whether Harbor is running in the background.
+pub type WorkReport = Box<dyn FnMut(Duration, Duration, bool)>;
 /// How much audio each [`WorkReport`] call covers.
 pub const REPORT_EVERY: Duration = Duration::from_millis(10);
 
@@ -187,6 +187,9 @@ pub struct Shared {
     pub view: Mutex<View>,
     pub clock: AudioClock,
     pub lead: AtomicUsize,
+    /// Mirrors `view.lcd_rev` so the UI thread skips locking `view` when the screen didn't change.
+    pub lcd_rev: AtomicU64,
+    pub background: AtomicBool,
     quit: AtomicBool,
     /// Tests: sleep this many times the emulation time after each chunk, as a slower device
     /// would take (f32 bits; 0 = off).
@@ -217,6 +220,8 @@ impl Engine {
             view: Mutex::new(View::default()),
             clock: AudioClock::default(),
             lead: AtomicUsize::new(lead.clamp(64, RING / 2)),
+            lcd_rev: AtomicU64::new(0),
+            background: AtomicBool::new(false),
             quit: AtomicBool::new(false),
             throttle: AtomicU32::new(0),
         });
@@ -253,6 +258,10 @@ impl Engine {
 
     pub fn set_lead(&self, frames: usize) {
         self.shared.lead.store(frames.clamp(64, RING / 2), Ordering::Relaxed);
+    }
+
+    pub fn set_background(&self, bg: bool) {
+        self.shared.background.store(bg, Ordering::Relaxed);
     }
 
     /// The flash once quiet, waiting at most `timeout`.
@@ -368,6 +377,7 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
     let mut midi_in = 0u64;
     let mut led_ms = 0u64;
     let mut tap: Option<Tap> = None;
+    let mut lcd_cache: Vec<u16> = vec![0; LCD_PIXELS];
     let (mut work_busy, mut work_frames) = (Duration::ZERO, 0u64);
     let report_frames = RATE as u64 * REPORT_EVERY.as_millis() as u64 / 1000;
 
@@ -495,7 +505,8 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
         };
 
         if fill >= lead {
-            std::thread::sleep(Duration::from_micros(500));
+            let surplus_us = (fill - lead) as u64 * 1_000_000 / RATE as u64;
+            std::thread::sleep(Duration::from_micros((surplus_us / 2).clamp(500, 2_000)));
         } else {
             while due.front().is_some_and(|e| e.frame <= made) {
                 let e = due.pop_front().unwrap();
@@ -517,7 +528,11 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
             work_frames += (a.len() / 2) as u64;
             if work_frames >= report_frames {
                 if let Some(report) = report.as_mut() {
-                    report(work_busy, Duration::from_nanos(work_frames * 1_000_000_000 / RATE as u64));
+                    report(
+                        work_busy,
+                        Duration::from_nanos(work_frames * 1_000_000_000 / RATE as u64),
+                        shared.background.load(Ordering::Relaxed),
+                    );
                 }
                 (work_busy, work_frames) = (Duration::ZERO, 0);
             }
@@ -565,10 +580,16 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
 
         if last_view.elapsed() >= Duration::from_millis(16) {
             last_view = Instant::now();
+            // Compare LCD pixels outside the view lock so unchanged frames avoid blocking UI reads.
+            let lcd_changed = lcd_cache[..] != rr.m.soc.lcd.fb[..];
+            if lcd_changed {
+                lcd_cache.copy_from_slice(&rr.m.soc.lcd.fb);
+            }
             let mut v = shared.view.lock().unwrap();
-            if v.lcd[..] != rr.m.soc.lcd.fb[..] {
-                v.lcd.copy_from_slice(&rr.m.soc.lcd.fb);
+            if lcd_changed {
+                v.lcd.copy_from_slice(&lcd_cache);
                 v.lcd_rev += 1;
+                shared.lcd_rev.store(v.lcd_rev, Ordering::Release);
             }
             // LEDs: the firmware multiplexes and PWMs them, so a short window aliases into flicker.
             // Measure over at least 25 ms of emulated time, scale as panel.rs does (a fully lit

@@ -34,6 +34,20 @@ struct Host {
     enc_clicks: [i32; 7],
     learn_source: i32,
     learned: Option<[i32; 4]>,
+    requested_lead: usize,
+}
+
+/// Ensure the engine's ring lead is at least 2x the AAudio burst in 44.1 kHz frames so a single
+/// output callback never drains more frames than the ring holds.
+fn update_lead_for_audio(h: &Host) {
+    let info = h.audio.info();
+    let min_lead = if info.sample_rate > 0 && info.frames_per_burst > 0 {
+        let burst_44k = (info.frames_per_burst as usize * 44_100) / (info.sample_rate as usize);
+        h.requested_lead.max(burst_44k * 2)
+    } else {
+        h.requested_lead
+    };
+    h.engine.set_lead(min_lead);
 }
 
 static HOST: Mutex<Option<Host>> = Mutex::new(None);
@@ -71,7 +85,7 @@ mod libc_timespec {
 fn engine_thread_setup() -> Option<WorkReport> {
     audio_priority();
     let mut hint = hint::Hint::for_this_thread()?;
-    Some(Box::new(move |busy, audio| hint.report(busy, audio)))
+    Some(Box::new(move |busy, audio, bg| hint.report(busy, audio, bg)))
 }
 
 /// Raise the engine thread to audio priority (what Process.setThreadPriority(URGENT_AUDIO) does).
@@ -110,9 +124,10 @@ pub extern "system" fn JNI_OnLoad(_vm: jni::JavaVM, _: *mut std::ffi::c_void) ->
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_start(
     _env: JNIEnv, _: JClass, lead: jint, low_latency: jboolean,
 ) -> jboolean {
+    let requested = lead.max(64) as usize;
     let mut h = host();
     if h.is_none() {
-        let (engine, out) = Engine::start(lead.max(64) as usize, engine_thread_setup);
+        let (engine, out) = Engine::start(requested, engine_thread_setup);
         let out = Arc::new(Mutex::new(out));
         let audio = audio::Output::new(out.clone(), low_latency != 0);
         *h = Some(Host {
@@ -125,10 +140,13 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_start(
             enc_clicks: [0; 7],
             learn_source: -1,
             learned: None,
+            requested_lead: requested,
         });
     }
     let host = h.as_mut().unwrap();
+    host.requested_lead = requested;
     host.audio.ensure_running();
+    update_lead_for_audio(host);
     (host.audio.is_running() as u8) as jboolean
 }
 
@@ -148,8 +166,17 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_setPaused(_
             h.audio.pause()
         } else {
             h.audio.ensure_running();
+            update_lead_for_audio(h);
             h.engine.send(Cmd::Settle);
         }
+    }
+}
+
+/// Tell the engine whether Harbor is running in the background so ADPF can tighten its target.
+#[no_mangle]
+pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_setBackground(_env: JNIEnv, _: JClass, bg: jboolean) {
+    if let Some(h) = host().as_ref() {
+        h.engine.set_background(bg != 0);
     }
 }
 
@@ -159,9 +186,10 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_restartAudi
     _env: JNIEnv, _: JClass, lead: jint, low_latency: jboolean,
 ) {
     if let Some(h) = host().as_mut() {
-        h.engine.set_lead(lead.max(64) as usize);
+        h.requested_lead = lead.max(64) as usize;
         h.audio = audio::Output::new(h.out.clone(), low_latency != 0);
         h.audio.ensure_running();
+        update_lead_for_audio(h);
         h.engine.send(Cmd::Settle);
     }
 }
@@ -311,9 +339,28 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_midiLearnPo
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_midiData(
     env: JNIEnv, _: JClass, source: jint, data: JByteArray, offset: jint, count: jint, timestamp: jlong,
 ) -> jboolean {
-    let all = bytes(&env, &data);
-    let (o, n) = (offset.max(0) as usize, count.max(0) as usize);
-    let Some(chunk) = all.get(o..o.saturating_add(n).min(all.len())) else { return JNI_FALSE };
+    if data.is_null() { return JNI_FALSE; }
+    let Ok(arr_len) = env.get_array_length(&data) else { return JNI_FALSE };
+    let arr_len = arr_len.max(0) as usize;
+    let o = offset.max(0) as usize;
+    let n = count.max(0) as usize;
+    let Some(end) = o.checked_add(n).map(|e| e.min(arr_len)) else { return JNI_FALSE };
+    let len = end.saturating_sub(o);
+    if len == 0 { return JNI_FALSE; }
+
+    let mut stack_buf = [0i8; 64];
+    let heap_buf: Vec<u8>;
+    let chunk: &[u8] = if len <= stack_buf.len() {
+        if env.get_byte_array_region(&data, o as jni::sys::jsize, &mut stack_buf[..len]).is_err() {
+            return JNI_FALSE;
+        }
+        // SAFETY: `i8` and `u8` have identical size and alignment, initialized by `get_byte_array_region`.
+        unsafe { std::slice::from_raw_parts(stack_buf.as_ptr() as *const u8, len) }
+    } else {
+        heap_buf = bytes(&env, &data);
+        let Some(slice) = heap_buf.get(o..end.min(heap_buf.len())) else { return JNI_FALSE };
+        slice
+    };
     let now = now_ns();
     let mut h = host();
     let Some(h) = h.as_mut() else { return JNI_FALSE };
@@ -394,6 +441,9 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_panic(_env:
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_lcd(env: JNIEnv, _: JClass, buf: JByteBuffer, since: jlong) -> jlong {
     let h = host();
     let Some(h) = h.as_ref() else { return since };
+    if h.engine.shared.lcd_rev.load(std::sync::atomic::Ordering::Acquire) as jlong == since {
+        return since;
+    }
     let v = h.engine.shared.view.lock().unwrap();
     if v.lcd_rev as jlong != since {
         if let (Ok(ptr), Ok(cap)) = (env.get_direct_buffer_address(&buf), env.get_direct_buffer_capacity(&buf)) {

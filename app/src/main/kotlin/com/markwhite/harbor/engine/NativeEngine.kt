@@ -15,6 +15,7 @@ object NativeEngine {
     @JvmStatic external fun start(leadFrames: Int, lowLatency: Boolean): Boolean
     @JvmStatic external fun shutdown()
     @JvmStatic external fun setPaused(paused: Boolean)
+    @JvmStatic external fun setBackground(background: Boolean)
     @JvmStatic external fun restartAudio(leadFrames: Int, lowLatency: Boolean)
 
     /** Boot a package. [sectors]: the sector store from [flashSectors] or a save, or null. */

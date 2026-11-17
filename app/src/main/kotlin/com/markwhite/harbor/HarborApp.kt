@@ -61,8 +61,8 @@ class HarborApp : Application() {
             }
 
             // on screen and in front: a share sheet or the shade over Harbor counts as not
-            override fun onResume(owner: LifecycleOwner) { harbor.onScreen = true }
-            override fun onPause(owner: LifecycleOwner) { harbor.onScreen = false }
+            override fun onResume(owner: LifecycleOwner) = harbor.setOnScreen(true)
+            override fun onPause(owner: LifecycleOwner) = harbor.setOnScreen(false)
 
             override fun onStop(owner: LifecycleOwner) {
                 inForeground = false
