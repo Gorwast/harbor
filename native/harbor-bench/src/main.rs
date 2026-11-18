@@ -71,8 +71,8 @@ fn apply_pin(mode: PinMode) -> String {
 
 fn main() {
     let mut files = Vec::new();
-    let (mut ms, mut clocks, mut jit, mut json, mut profile, mut fast_dual, mut pin) =
-        (8000u64, vec![240u32, 200, 160, 120], true, false, false, true, PinMode::None);
+    let (mut ms, mut clocks, mut jit, mut json, mut profile, mut pin) =
+        (8000u64, vec![240u32, 200, 160, 120], true, false, false, PinMode::None);
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -81,7 +81,6 @@ fn main() {
             "--no-jit" => jit = false,
             "--json" => json = true,
             "--profile" => profile = true,
-            "--baseline-dual" => fast_dual = false,
             "--pin" => {
                 pin = match args.next().expect("--pin none|prime|big").as_str() {
                     "prime" => PinMode::Prime,
@@ -93,13 +92,13 @@ fn main() {
         }
     }
     if files.is_empty() {
-        eprintln!("usage: harbor-bench FIRMWARE.fwsc... [--ms 8000] [--mhz 240,200,160,120] [--no-jit] [--json] [--profile] [--baseline-dual] [--pin none|prime|big]");
+        eprintln!("usage: harbor-bench FIRMWARE.fwsc... [--ms 8000] [--mhz 240,200,160,120] [--no-jit] [--json] [--profile] [--pin none|prime|big]");
         std::process::exit(2);
     }
     let pin_info = apply_pin(pin);
     if !json {
         if profile {
-            println!("# dual={} pin={pin_info}", if fast_dual { "adaptive" } else { "upstream" });
+            println!("# pin={pin_info}");
         }
         println!("{:<28} {:>5} {:>4} {:>9} {:>8}", "firmware", "MHz", "JIT", "x real", "frames");
     }
@@ -110,7 +109,7 @@ fn main() {
         };
         let name = std::path::Path::new(path).file_stem().map_or(path.clone(), |s| s.to_string_lossy().into_owned());
         for &mhz in &clocks {
-            match bench(&pkg, mhz, jit, ms, profile, fast_dual) {
+            match bench(&pkg, mhz, jit, ms, profile) {
                 Ok(res) => {
                     if json {
                         println!("{{\"firmware\":\"{name}\",\"mhz\":{mhz},\"jit\":{},\"realtime\":{:.3},\"audioFrames\":{}}}", res.jit_active, res.x_real, res.frames);
@@ -122,16 +121,16 @@ fn main() {
                                 res.pc_hist[0], res.pc_hist[1], res.pc_hist[2], res.pc_hist[3], res.pc_hist[4]);
                             println!("  cpu0 jit: {}", res.cpu0_jit);
                             if let Some(c1) = &res.cpu1_jit {
-                                println!("  cpu1: {} insns ({} slices, {} idle breaks), {} decodes, pc={:#010x}, jit: {}",
-                                    res.cpu1_insns, res.cpu1_slices, res.cpu1_idle_breaks, res.cpu1_decodes, res.cpu1_pc, c1);
+                                println!("  cpu1: {} insns, {} decodes, pc={:#010x}, jit: {}",
+                                    res.cpu1_insns, res.cpu1_decodes, res.cpu1_pc, c1);
                             } else {
                                 println!("  cpu1: not released");
                             }
                             if !res.top_slow.is_empty() {
                                 println!("  top slow_hist: {}", res.top_slow);
                             }
-                            println!("  skipped_cycles={}, lcd_frames={}, unknown_mmio={}, resets={}",
-                                res.skipped, res.lcd_frames, res.unknown_mmio, res.resets);
+                            println!("  skipped_cycles={}, loop_skip=(skipped={}, hits={}), lcd_frames={}, unknown_mmio={}, resets={}",
+                                res.skipped, res.loop_skipped, res.loop_hits, res.lcd_frames, res.unknown_mmio, res.resets);
                             if !res.console.is_empty() {
                                 println!("  console: {:?}", res.console);
                             }
@@ -153,14 +152,14 @@ struct BenchResult {
     cpu0_pc: u32,
     cpu0_jit: String,
     cpu1_insns: u64,
-    cpu1_slices: u64,
-    cpu1_idle_breaks: u64,
     cpu1_decodes: u64,
     cpu1_pc: u32,
     cpu1_jit: Option<String>,
     pc_hist: [u64; 5],
     top_slow: String,
     skipped: u64,
+    loop_skipped: u64,
+    loop_hits: u64,
     lcd_frames: u64,
     unknown_mmio: usize,
     resets: u32,
@@ -168,7 +167,7 @@ struct BenchResult {
 }
 
 /// (steady times real time, audio frames made, whether the JIT was on, plus profile breakdown)
-fn bench(pkg: &[u8], mhz: u32, jit: bool, ms: u64, profile: bool, fast_dual: bool) -> Result<BenchResult, String> {
+fn bench(pkg: &[u8], mhz: u32, jit: bool, ms: u64, profile: bool) -> Result<BenchResult, String> {
     let mut m = Machine::boot(pkg, &[], mhz, None, jit)?;
     if profile {
         m.set_profile(true);
@@ -185,7 +184,7 @@ fn bench(pkg: &[u8], mhz: u32, jit: bool, ms: u64, profile: bool, fast_dual: boo
         if steady.is_none() && m.soc.periph.ms() >= warmup {
             steady = Some((Instant::now(), m.soc.periph.ms()));
         }
-        m.run_with_dual(20_000, fast_dual);
+        m.run(20_000);
         if profile {
             let pc = m.cpu.pc;
             let bucket = if (0x0200_0000..0x0400_0000).contains(&pc) { 0 }
@@ -215,14 +214,14 @@ fn bench(pkg: &[u8], mhz: u32, jit: bool, ms: u64, profile: bool, fast_dual: boo
         cpu0_pc: m.cpu.pc,
         cpu0_jit: m.cpu.jit_profile_json(),
         cpu1_insns: m.cpu1_insns,
-        cpu1_slices: m.cpu1_slices,
-        cpu1_idle_breaks: m.cpu1_idle_breaks,
         cpu1_decodes: m.cpu1.as_ref().map_or(0, |c| c.decodes),
         cpu1_pc: m.cpu1.as_ref().map_or(0, |c| c.pc),
         cpu1_jit: m.cpu1.as_ref().map(|c| c.jit_profile_json()),
         pc_hist,
         top_slow,
         skipped: m.soc.periph.skipped,
+        loop_skipped: m.soc.loop_skip.skipped,
+        loop_hits: m.soc.loop_skip.hits,
         lcd_frames: m.soc.lcd.frames,
         unknown_mmio: m.soc.unknown_accesses().len(),
         resets: m.firmware_resets,

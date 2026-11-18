@@ -460,7 +460,7 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
                 Cmd::Analog { idx, value } => apply(&mut r, Action::Adc { ch: idx, value: value.min(1023) }),
                 Cmd::Vel(us) => {
                     if let Some(r) = r.as_mut() {
-                        r.m.soc.periph.smk_vel = (r.m.soc.periph.hz as u128 * us as u128 / 1_000_000) as u64;
+                        r.m.soc.periph.smk_vel_us = us;
                     }
                 }
                 Cmd::Settle => {

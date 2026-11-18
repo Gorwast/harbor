@@ -254,6 +254,17 @@ engineering milestones and risks.
       `setPreferPowerEfficiency(false)` / `notifyWorkloadIncrease` hints.
     - `AudioScreen.kt`: added `100`, `80`, and `60 MHz` manual clock options for testing heavy
       firmwares (`CLOCKS` automatic stepping stays `[240, 200, 160, 120]`).
+- [x] Upstream `fm1-emu` submodule updated to `2ed9865` (2026-11-18):
+  - Fast-forwarded `third_party/fm1-emu` to `origin/master` (`2ed986561c6f26596d37fd306fac0e7558a41356`, PR #198)
+    and removed all five merged patches (`patches/0001..0005`), updating `tools/apply-patches.sh`
+    for an empty `patches/` directory.
+  - Updated `harbor-engine/src/machine.rs` and `harbor-engine/src/engine.rs` for upstream's
+    `Soc::sfc_boot`, `fwsc::usr_load_syx` layout parameter, `periph.smk_vel_us`, `machine::run_dual`
+    / `machine::run_blocks` (upstream `LoopSkip`, `cpu1` compiled stretches, `Fast::Div` / `Un` /
+    `Raw*` JIT compilation, `Rts` `itab` caching, and `TIMER0..3` crystal scaling), and
+    `harbor-bench` to drop the superseded `--baseline-dual` flag and report `loop_skip`.
+  - Pending Pixel 7 Pro reconnect (`adb`): re-run `harbor-bench` on `SHRUB-V1.01` and smoke-test
+    the rebuilt `profile` APK on device.
 
 ---
 
