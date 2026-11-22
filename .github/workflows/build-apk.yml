@@ -39,8 +39,16 @@ jobs:
         with:
           targets: aarch64-linux-android,x86_64-linux-android
 
+      - name: Cache cargo-ndk
+        id: cache-cargo-ndk
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: cargo-ndk-${{ runner.os }}
+
       - name: Install cargo-ndk
-        uses: taiki-e/install-action@cargo-ndk
+        if: steps.cache-cargo-ndk.outputs.cache-hit != 'true'
+        run: cargo install cargo-ndk --locked
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
