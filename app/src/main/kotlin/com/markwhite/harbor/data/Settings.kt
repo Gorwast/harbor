@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
-enum class KnobGesture { Vertical, Circular, Both }
+enum class KnobGesture { Vertical, Circular, Both, Horizontal }
 enum class KeybedMode { TwoTiers, SingleRow }
 enum class BufferMode { LowLatency, Stable }
 
@@ -81,9 +81,35 @@ class Settings(context: Context) {
     fun setTabletPane(v: Boolean) { prefs.edit { putBoolean("tabletPane", v) }; _tabletPane.value = v }
 
     /** The panel's colour: a [com.markwhite.harbor.ui.panel.Finish] id. */
-    private val _finish = flow { prefs.getString("finish", "graphite") ?: "graphite" }
+    private val _finish = flow { prefs.getString("finish", "dark") ?: "dark" }
     val finish: StateFlow<String> = _finish
     fun setFinish(v: String) { prefs.edit { putString("finish", v) }; _finish.value = v }
+
+    /** Optional ARGB override for the keybed's general colour; null uses the preset's keys. */
+    private val _keysColor = flow { if (prefs.contains("keysColor")) prefs.getInt("keysColor", 0) else null }
+    val keysColor: StateFlow<Int?> = _keysColor
+    fun setKeysColor(argb: Int?) {
+        prefs.edit { if (argb == null) remove("keysColor") else putInt("keysColor", argb) }
+        _keysColor.value = argb
+    }
+
+    /** Optional per-knob ARGB colour overrides, keyed by `"master"` or `"enc<id>"`. */
+    private val _knobColors = flow {
+        val raw = prefs.getString("knobColors", null) ?: return@flow emptyMap()
+        runCatching { json.decodeFromString<Map<String, Int>>(raw) }.getOrDefault(emptyMap())
+    }
+    val knobColors: StateFlow<Map<String, Int>> = _knobColors
+    fun setKnobColor(key: String, argb: Int?) {
+        val next = _knobColors.value.toMutableMap()
+        if (argb == null) next.remove(key) else next[key] = argb
+        prefs.edit { if (next.isEmpty()) remove("knobColors") else putString("knobColors", json.encodeToString(next)) }
+        _knobColors.value = next
+    }
+    fun setAllKnobColors(argb: Int?, keys: List<String>) {
+        val next = if (argb == null) emptyMap() else keys.associateWith { argb }
+        prefs.edit { if (next.isEmpty()) remove("knobColors") else putString("knobColors", json.encodeToString(next)) }
+        _knobColors.value = next
+    }
 
     private val _immersive = flow { prefs.getBoolean("immersive", true) }
     val immersive: StateFlow<Boolean> = _immersive

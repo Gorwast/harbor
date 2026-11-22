@@ -19,6 +19,8 @@ import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.toArgb
@@ -28,9 +30,8 @@ import androidx.compose.ui.unit.dp
 import kotlin.random.Random
 
 /**
- * The panel's materials. The FM-1 is sold in several colours; [Graphite] is Harbor's default,
- * [Dusk] keeps fm1-emu's own panel colours, and Purple to Red follow the anodised cases sellers
- * list. Every case keeps the cream silicone keys and dark knobs.
+ * The panel's materials, matching the eight FM-1 hardware colourways:
+ * Dark, Orange, Gray, Dark Green, Blue, Purple, White Green and White Purple.
  */
 data class Finish(
     val id: String,
@@ -62,108 +63,142 @@ data class Finish(
     val grain: Float,
 )
 
-val Graphite = Finish(
-    id = "graphite", label = "Graphite",
-    bodyTop = Color(0xFF2D2E32), bodyBot = Color(0xFF222326), bodyEdge = Color(0x33FFFFFF),
-    tray = Color(0xFF121315), trayRim = Color(0xFF34353A),
-    silk = Color(0xFFDAD7D0), silkDim = Color(0xFF7E7C77),
-    capTop = Color(0xFF2E2F33), capBot = Color(0xFF232427), capRim = Color(0xFF3D3E43), capInk = Color(0xFFDAD7D0),
-    naturalTop = Color(0xFFF4EBDF), naturalBot = Color(0xFFE5D3BF), naturalInk = Color(0xFF7A6A58), keyGlow = Color(0xFFFFA24A),
-    sharpTop = Color(0xFF2B2C30), sharpBot = Color(0xFF0D0D0F),
-    knobHi = Color(0xFF3F4045), knobLo = Color(0xFF0F1012), pointer = Color(0xFFF4F1EA), accent = Color(0xFFFFA43A),
+val Dark = Finish(
+    id = "dark", label = "Dark",
+    bodyTop = Color(0xFF35363A), bodyBot = Color(0xFF1E1F22), bodyEdge = Color(0x33FFFFFF),
+    tray = Color(0xFF101113), trayRim = Color(0xFF42444A),
+    silk = Color(0xFFDAD7D0), silkDim = Color(0xFF84868B),
+    capTop = Color(0xFF212225), capBot = Color(0xFF141517), capRim = Color(0xFF36383D), capInk = Color(0xFFEBEAE6),
+    naturalTop = Color(0xFF232428), naturalBot = Color(0xFF151618), naturalInk = Color(0xFFEAEAEA), keyGlow = Color(0xFFFFA24A),
+    sharpTop = Color(0xFF1C1D20), sharpBot = Color(0xFF0B0C0E),
+    knobHi = Color(0xFF3B3C41), knobLo = Color(0xFF0D0E10), pointer = Color(0xFFF4F1EA), accent = Color(0xFFFFA43A),
     grain = 0.04f,
 )
 
-val Dusk = Finish(
-    id = "dusk", label = "Dusk",
-    bodyTop = Color(0xFF5E6166), bodyBot = Color(0xFF4A4D52), bodyEdge = Color(0x4DFFFFFF),
-    tray = Color(0xFF26272A), trayRim = Color(0xFF6A6D72),
-    silk = Color(0xFFE9E6DE), silkDim = Color(0xFFB5B2AB),
-    capTop = Color(0xFF4B4E54), capBot = Color(0xFF3B3D42), capRim = Color(0xFF63666C), capInk = Color(0xFFE9E6DE),
-    naturalTop = Color(0xFF7A6366), naturalBot = Color(0xFF5A4749), naturalInk = Color(0xFFE6D6D7), keyGlow = Color(0xFFFFB27A),
-    sharpTop = Color(0xFF3E3234), sharpBot = Color(0xFF2A2123),
-    knobHi = Color(0xFF55585E), knobLo = Color(0xFF26272A), pointer = Color(0xFFF4F1EA), accent = Color(0xFFF2A33A),
-    grain = 0.06f,
-)
-
-val Arctic = Finish(
-    id = "arctic", label = "Arctic",
-    bodyTop = Color(0xFFEDEBE6), bodyBot = Color(0xFFDAD7D0), bodyEdge = Color(0xB3FFFFFF),
-    tray = Color(0xFF2A2B2E), trayRim = Color(0xFFBEBBB4),
-    silk = Color(0xFF3A3B3F), silkDim = Color(0xFF8D8A84),
-    capTop = Color(0xFFF8F6F2), capBot = Color(0xFFE2DFD8), capRim = Color(0xFFC9C6BF), capInk = Color(0xFF36373B),
-    naturalTop = Color(0xFFFBF9F5), naturalBot = Color(0xFFE6E2DA), naturalInk = Color(0xFF6A675F), keyGlow = Color(0xFFFFB766),
-    sharpTop = Color(0xFF3C3E43), sharpBot = Color(0xFF1A1B1E),
-    knobHi = Color(0xFF4A4C52), knobLo = Color(0xFF16171A), pointer = Color(0xFFF4F1EA), accent = Color(0xFFF08A1C),
-    grain = 0.07f,
-)
-
-// the coloured cases: the colour in the body and caps, silk light enough to read on it
-val Purple = Finish(
-    id = "purple", label = "Purple",
-    bodyTop = Color(0xFF4B3B66), bodyBot = Color(0xFF3A2D51), bodyEdge = Color(0x40FFFFFF),
-    tray = Color(0xFF17121F), trayRim = Color(0xFF5D4B7B),
-    silk = Color(0xFFE8E1F2), silkDim = Color(0xFFA698BA),
-    capTop = Color(0xFF4E3E69), capBot = Color(0xFF3D3055), capRim = Color(0xFF61507E), capInk = Color(0xFFE8E1F2),
-    naturalTop = Graphite.naturalTop, naturalBot = Graphite.naturalBot, naturalInk = Graphite.naturalInk, keyGlow = Graphite.keyGlow,
-    sharpTop = Graphite.sharpTop, sharpBot = Graphite.sharpBot,
-    knobHi = Color(0xFF3F3A4A), knobLo = Color(0xFF100E14), pointer = Color(0xFFF4F1EA), accent = Color(0xFFFFA43A),
-    grain = 0.05f,
-)
-
-// light enough that amber vanishes on it: its LEDs and pointers are a warm white, its silk dark
 val Orange = Finish(
     id = "orange", label = "Orange",
-    bodyTop = Color(0xFFE9762C), bodyBot = Color(0xFFD0611D), bodyEdge = Color(0x66FFFFFF),
-    tray = Color(0xFF2A1A10), trayRim = Color(0xFFF08D48),
-    silk = Color(0xFF2E1B0D), silkDim = Color(0xFF7D4521),
-    capTop = Color(0xFFEE7E35), capBot = Color(0xFFD86A22), capRim = Color(0xFFF49656), capInk = Color(0xFF2E1B0D),
-    naturalTop = Graphite.naturalTop, naturalBot = Graphite.naturalBot, naturalInk = Graphite.naturalInk, keyGlow = Color(0xFFFFE6B8),
-    sharpTop = Graphite.sharpTop, sharpBot = Graphite.sharpBot,
-    knobHi = Graphite.knobHi, knobLo = Graphite.knobLo, pointer = Color(0xFFF4F1EA), accent = Color(0xFFFFF1D2),
-    grain = 0.07f,
-)
-
-val Navy = Finish(
-    id = "navy", label = "Navy",
-    bodyTop = Color(0xFF2B3651), bodyBot = Color(0xFF1F283E), bodyEdge = Color(0x40FFFFFF),
-    tray = Color(0xFF111522), trayRim = Color(0xFF3B4867),
-    silk = Color(0xFFDDE1EB), silkDim = Color(0xFF8C93A7),
-    capTop = Color(0xFF2D3854), capBot = Color(0xFF222B42), capRim = Color(0xFF3F4B6A), capInk = Color(0xFFDDE1EB),
-    naturalTop = Graphite.naturalTop, naturalBot = Graphite.naturalBot, naturalInk = Graphite.naturalInk, keyGlow = Graphite.keyGlow,
-    sharpTop = Graphite.sharpTop, sharpBot = Graphite.sharpBot,
-    knobHi = Color(0xFF383D4A), knobLo = Color(0xFF0E1015), pointer = Color(0xFFF4F1EA), accent = Color(0xFFFFA43A),
-    grain = 0.05f,
-)
-
-val Green = Finish(
-    id = "green", label = "Green",
-    bodyTop = Color(0xFF2D4537), bodyBot = Color(0xFF213429), bodyEdge = Color(0x40FFFFFF),
-    tray = Color(0xFF0F1712), trayRim = Color(0xFF3D5948),
-    silk = Color(0xFFDEE7E0), silkDim = Color(0xFF8FA296),
-    capTop = Color(0xFF2F4739), capBot = Color(0xFF24372C), capRim = Color(0xFF405D4C), capInk = Color(0xFFDEE7E0),
-    naturalTop = Graphite.naturalTop, naturalBot = Graphite.naturalBot, naturalInk = Graphite.naturalInk, keyGlow = Graphite.keyGlow,
-    sharpTop = Graphite.sharpTop, sharpBot = Graphite.sharpBot,
-    knobHi = Color(0xFF39413C), knobLo = Color(0xFF0E1210), pointer = Color(0xFFF4F1EA), accent = Color(0xFFFFA43A),
-    grain = 0.05f,
-)
-
-val Red = Finish(
-    id = "red", label = "Red",
-    bodyTop = Color(0xFFA72C30), bodyBot = Color(0xFF8A2125), bodyEdge = Color(0x4DFFFFFF),
-    tray = Color(0xFF1E0E0F), trayRim = Color(0xFFB9494C),
-    silk = Color(0xFFF4E4E1), silkDim = Color(0xFFCB9894),
-    capTop = Color(0xFFAA3034), capBot = Color(0xFF8F2528), capRim = Color(0xFFC04B4E), capInk = Color(0xFFF4E4E1),
-    naturalTop = Graphite.naturalTop, naturalBot = Graphite.naturalBot, naturalInk = Graphite.naturalInk, keyGlow = Color(0xFFFFC27A),
-    sharpTop = Graphite.sharpTop, sharpBot = Graphite.sharpBot,
-    knobHi = Graphite.knobHi, knobLo = Graphite.knobLo, pointer = Color(0xFFF4F1EA), accent = Color(0xFFFFB24A),
+    bodyTop = Color(0xFFEC5316), bodyBot = Color(0xFFCC3D0D), bodyEdge = Color(0x66FFFFFF),
+    tray = Color(0xFF982D0B), trayRim = Color(0xFFF27642),
+    silk = Color(0xFFF9EDE4), silkDim = Color(0xFFF5C1A8),
+    capTop = Color(0xFFCC461A), capBot = Color(0xFFAD350F), capRim = Color(0xFFE06034), capInk = Color(0xFF240F07),
+    naturalTop = Color(0xFFCB4418), naturalBot = Color(0xFFAD350F), naturalInk = Color(0xFF281108), keyGlow = Color(0xFFFFE6B8),
+    sharpTop = Color(0xFFC44016), sharpBot = Color(0xFFA2300C),
+    knobHi = Color(0xFF38393D), knobLo = Color(0xFF0D0E10), pointer = Color(0xFFF4F1EA), accent = Color(0xFFFFF1D2),
     grain = 0.06f,
 )
 
-val Finishes = listOf(Graphite, Dusk, Arctic, Purple, Orange, Navy, Green, Red)
-fun finishOf(id: String) = Finishes.firstOrNull { it.id == id } ?: Graphite
+val Gray = Finish(
+    id = "gray", label = "Gray",
+    bodyTop = Color(0xFFDDD8D0), bodyBot = Color(0xFFC4BEB6), bodyEdge = Color(0xB3FFFFFF),
+    tray = Color(0xFF34363A), trayRim = Color(0xFFB0AAA2),
+    silk = Color(0xFF36383C), silkDim = Color(0xFF7D7B76),
+    capTop = Color(0xFF56585C), capBot = Color(0xFF424448), capRim = Color(0xFF6A6C70), capInk = Color(0xFFEAE8E4),
+    naturalTop = Color(0xFF54565A), naturalBot = Color(0xFF404246), naturalInk = Color(0xFFDAD8D4), keyGlow = Color(0xFFFFB766),
+    sharpTop = Color(0xFF4B4D51), sharpBot = Color(0xFF37393D),
+    knobHi = Color(0xFF3F4045), knobLo = Color(0xFF101113), pointer = Color(0xFFF4F1EA), accent = Color(0xFFF08A1C),
+    grain = 0.07f,
+)
 
-val LocalFinish = staticCompositionLocalOf { Graphite }
+val DarkGreen = Finish(
+    id = "dark_green", label = "Dark Green",
+    bodyTop = Color(0xFF35373A), bodyBot = Color(0xFF1F2124), bodyEdge = Color(0x33FFFFFF),
+    tray = Color(0xFF3E9E86), trayRim = Color(0xFF4E5156),
+    silk = Color(0xFFDAD7D0), silkDim = Color(0xFF8A8C91),
+    capTop = Color(0xFF71D8BD), capBot = Color(0xFF55BD9F), capRim = Color(0xFF8BE4CD), capInk = Color(0xFF123029),
+    naturalTop = Color(0xFF6CD4B9), naturalBot = Color(0xFF51B89E), naturalInk = Color(0xFF123029), keyGlow = Color(0xFFB5FFE9),
+    sharpTop = Color(0xFF61C7AC), sharpBot = Color(0xFF46A78E),
+    knobHi = Color(0xFF3B3C41), knobLo = Color(0xFF0E0F11), pointer = Color(0xFFF4F1EA), accent = Color(0xFF72F2CE),
+    grain = 0.04f,
+)
+
+val Blue = Finish(
+    id = "blue", label = "Blue",
+    bodyTop = Color(0xFFF3F1EC), bodyBot = Color(0xFFDEDCD6), bodyEdge = Color(0xB3FFFFFF),
+    tray = Color(0xFF34506B), trayRim = Color(0xFFC5C3BC),
+    silk = Color(0xFF3A3B3F), silkDim = Color(0xFF84837E),
+    capTop = Color(0xFF587FA3), capBot = Color(0xFF436586), capRim = Color(0xFF6D94B8), capInk = Color(0xFFF0F5FA),
+    naturalTop = Color(0xFF547A9C), naturalBot = Color(0xFF406180), naturalInk = Color(0xFF132230), keyGlow = Color(0xFF9AD0FF),
+    sharpTop = Color(0xFF4B6F90), sharpBot = Color(0xFF365573),
+    knobHi = Color(0xFF3B3D42), knobLo = Color(0xFF0F1013), pointer = Color(0xFFF4F1EA), accent = Color(0xFF66B6FF),
+    grain = 0.06f,
+)
+
+val Purple = Finish(
+    id = "purple", label = "Purple",
+    bodyTop = Color(0xFFD895CD), bodyBot = Color(0xFFBA76B0), bodyEdge = Color(0x66FFFFFF),
+    tray = Color(0xFF684880), trayRim = Color(0xFFE3ACE0),
+    silk = Color(0xFF361F42), silkDim = Color(0xFF71497A),
+    capTop = Color(0xFF9D78B6), capBot = Color(0xFF825E9B), capRim = Color(0xFFB28FCA), capInk = Color(0xFF231330),
+    naturalTop = Color(0xFF9772B0), naturalBot = Color(0xFF7D5B96), naturalInk = Color(0xFF251633), keyGlow = Color(0xFFF2C2FF),
+    sharpTop = Color(0xFF8D68A6), sharpBot = Color(0xFF72508B),
+    knobHi = Color(0xFF3B3842), knobLo = Color(0xFF0E0D12), pointer = Color(0xFFF4F1EA), accent = Color(0xFFFFB2F5),
+    grain = 0.05f,
+)
+
+val WhiteGreen = Finish(
+    id = "white_green", label = "White Green",
+    bodyTop = Color(0xFFF5F4EE), bodyBot = Color(0xFFE0DFD8), bodyEdge = Color(0xB3FFFFFF),
+    tray = Color(0xFF317F7B), trayRim = Color(0xFFC8C7BF),
+    silk = Color(0xFF36383B), silkDim = Color(0xFF83847F),
+    capTop = Color(0xFF5DC0BB), capBot = Color(0xFF42A19C), capRim = Color(0xFF75D2CD), capInk = Color(0xFF102E2D),
+    naturalTop = Color(0xFF57B7B2), naturalBot = Color(0xFF3E9994), naturalInk = Color(0xFF102E2D), keyGlow = Color(0xFFA8FFF9),
+    sharpTop = Color(0xFF4DA9A4), sharpBot = Color(0xFF358A85),
+    knobHi = Color(0xFF3B3D42), knobLo = Color(0xFF0F1013), pointer = Color(0xFFF4F1EA), accent = Color(0xFF5CE0D8),
+    grain = 0.06f,
+)
+
+val WhitePurple = Finish(
+    id = "white_purple", label = "White Purple",
+    bodyTop = Color(0xFFDFDFDE), bodyBot = Color(0xFFC9C9C7), bodyEdge = Color(0xB3FFFFFF),
+    tray = Color(0xFF4E3573), trayRim = Color(0xFFB5B5B2),
+    silk = Color(0xFF36383B), silkDim = Color(0xFF7E7E82),
+    capTop = Color(0xFF8161AF), capBot = Color(0xFF674993), capRim = Color(0xFF9779C4), capInk = Color(0xFFF3EFFA),
+    naturalTop = Color(0xFF7B5BA8), naturalBot = Color(0xFF62458C), naturalInk = Color(0xFF1F1233), keyGlow = Color(0xFFD2B8FF),
+    sharpTop = Color(0xFF70519C), sharpBot = Color(0xFF563B7E),
+    knobHi = Color(0xFF3B3A42), knobLo = Color(0xFF0E0E12), pointer = Color(0xFFF4F1EA), accent = Color(0xFFB892FF),
+    grain = 0.06f,
+)
+
+val Finishes = listOf(Dark, Orange, Gray, DarkGreen, Blue, Purple, WhiteGreen, WhitePurple)
+
+fun finishOf(id: String): Finish = when (id) {
+    "graphite", "dusk", "dark" -> Dark
+    "arctic", "gray" -> Gray
+    "navy", "blue" -> Blue
+    "green", "dark_green" -> DarkGreen
+    "red", "orange" -> Orange
+    "purple" -> Purple
+    "white_green" -> WhiteGreen
+    "white_purple" -> WhitePurple
+    else -> Dark
+}
+
+/** Derives keybed & tray shades when the user picks a custom general colour for the keys. */
+fun Finish.withKeysColor(color: Color?): Finish {
+    if (color == null) return this
+    val ink = if (color.luminance() > 0.35f) Color(0xFF18191C) else Color(0xFFEDEDEC)
+    return copy(
+        naturalTop = color,
+        naturalBot = lerp(color, Color.Black, 0.16f),
+        naturalInk = ink,
+        sharpTop = lerp(color, Color.Black, 0.10f),
+        sharpBot = lerp(color, Color.Black, 0.28f),
+        tray = lerp(color, Color.Black, 0.38f),
+        trayRim = lerp(color, Color.White, 0.18f),
+        keyGlow = lerp(color, Color.White, 0.45f),
+    )
+}
+
+/** Derives 3D knob shading and a contrasting pointer for an optional custom knob colour. */
+fun knobShade(base: Finish, custom: Color?): Triple<Color, Color, Color> {
+    if (custom == null) return Triple(base.knobHi, base.knobLo, base.pointer)
+    val hi = lerp(custom, Color.White, 0.18f)
+    val lo = lerp(custom, Color.Black, 0.50f)
+    val ptr = if (custom.luminance() > 0.50f) Color(0xFF1C1D20) else Color(0xFFF4F1EA)
+    return Triple(hi, lo, ptr)
+}
+
+val LocalFinish = staticCompositionLocalOf { Dark }
 
 // ------------------------------------------------------------------------------ light
 

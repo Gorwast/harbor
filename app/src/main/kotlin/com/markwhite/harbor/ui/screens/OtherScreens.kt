@@ -1,9 +1,13 @@
 package com.markwhite.harbor.ui.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,7 +19,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -25,19 +32,27 @@ import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.markwhite.harbor.HarborApp
 import com.markwhite.harbor.R
@@ -45,6 +60,11 @@ import com.markwhite.harbor.data.FirmwareEntry
 import com.markwhite.harbor.data.KeybedMode
 import com.markwhite.harbor.data.KnobGesture
 import com.markwhite.harbor.ui.Screen
+import com.markwhite.harbor.ui.panel.Finish
+import com.markwhite.harbor.ui.panel.Finishes
+import com.markwhite.harbor.ui.panel.Fm1Panel
+import com.markwhite.harbor.ui.panel.finishOf
+import com.markwhite.harbor.ui.panel.knobShade
 import com.markwhite.harbor.ui.theme.Tokens
 
 const val DISCLAIMER = "Harbor plays M-VAVE FM-1 firmwares. Not made by or affiliated with M-VAVE. " +
@@ -56,8 +76,17 @@ fun ControlsScreen(app: HarborApp, onBack: () -> Unit) {
     val s = app.settings
     SubScreen("Controls & display", onBack) {
         Section("Knobs") {
-            Choice("Gesture", listOf(KnobGesture.Vertical to "Drag up/down", KnobGesture.Circular to "Circular", KnobGesture.Both to "Both"),
-                s.knobGesture.collectAsState().value, s::setKnobGesture)
+            Choice(
+                "Gesture",
+                listOf(
+                    KnobGesture.Vertical to "Up/down",
+                    KnobGesture.Horizontal to "Left/right",
+                    KnobGesture.Circular to "Circular",
+                    KnobGesture.Both to "Both",
+                ),
+                s.knobGesture.collectAsState().value,
+                s::setKnobGesture,
+            )
             Choice("Sensitivity", listOf(18f to "Fine", 12f to "Normal", 8f to "Fast"), s.knobDpPerDetent.collectAsState().value, s::setKnobDpPerDetent)
             SwitchRow("Tap a knob to step", s.tapToStep.collectAsState().value, "Top or right half +1, bottom or left −1", s::setTapToStep)
         }
@@ -72,7 +101,63 @@ fun ControlsScreen(app: HarborApp, onBack: () -> Unit) {
             SwitchRow("Keys", s.hapticKeys.collectAsState().value, onChange = s::setHapticKeys)
         }
         Section("Display") {
-            SwatchChoice("Panel finish", com.markwhite.harbor.ui.panel.Finishes.map { Swatch(it.id, it.label, it.bodyTop, it.bodyBot, it.trayRim) }, s.finish.collectAsState().value, s::setFinish)
+            val activeFinish = finishOf(s.finish.collectAsState().value)
+            val keysColorArgb by s.keysColor.collectAsState()
+            val knobColorsArgb by s.knobColors.collectAsState()
+            var pickingTarget by remember { mutableStateOf<ColorTarget?>(null) }
+
+            SwatchChoice(
+                "Panel finish",
+                Finishes.map { Swatch(it.id, it.label, it.bodyTop, it.naturalTop, it.trayRim) },
+                activeFinish.id,
+                s::setFinish,
+            )
+
+            KeysColorRow(
+                activeFinish = activeFinish,
+                customColor = keysColorArgb?.let(::Color),
+                onClick = { pickingTarget = ColorTarget.Keys },
+            )
+
+            KnobColorsPicker(
+                activeFinish = activeFinish,
+                knobColors = knobColorsArgb,
+                onPickKnob = { key, label -> pickingTarget = ColorTarget.Knob(key, label) },
+                onResetAll = { s.setAllKnobColors(null, PANEL_KNOBS.map { it.first }) },
+            )
+
+            pickingTarget?.let { target ->
+                val initialColor = when (target) {
+                    ColorTarget.Keys -> keysColorArgb?.let(::Color)
+                    is ColorTarget.Knob -> knobColorsArgb[target.key]?.let(::Color)
+                }
+                val fallbackColor = when (target) {
+                    ColorTarget.Keys -> activeFinish.naturalTop
+                    is ColorTarget.Knob -> activeFinish.knobHi
+                }
+                ColorPickerDialog(
+                    title = when (target) {
+                        ColorTarget.Keys -> "Keys colour"
+                        is ColorTarget.Knob -> "${target.label} colour"
+                    },
+                    initial = initialColor,
+                    fallback = fallbackColor,
+                    showApplyAll = target is ColorTarget.Knob,
+                    onApplyAll = { color ->
+                        s.setAllKnobColors(color?.toArgb(), PANEL_KNOBS.map { it.first })
+                        pickingTarget = null
+                    },
+                    onConfirm = { color ->
+                        when (target) {
+                            ColorTarget.Keys -> s.setKeysColor(color?.toArgb())
+                            is ColorTarget.Knob -> s.setKnobColor(target.key, color?.toArgb())
+                        }
+                        pickingTarget = null
+                    },
+                    onDismiss = { pickingTarget = null },
+                )
+            }
+
             SwitchRow("Smooth LCD scaling", s.smoothLcd.collectAsState().value, "Off: pixel-exact", s::setSmoothLcd)
             SwitchRow("Immersive in landscape", s.immersive.collectAsState().value, "Hide the status bar while playing", s::setImmersive)
         }
@@ -271,4 +356,211 @@ fun Onboarding(app: HarborApp, onDone: () -> Unit) {
             }
         }
     }
+}
+
+private sealed interface ColorTarget {
+    data object Keys : ColorTarget
+    data class Knob(val key: String, val label: String) : ColorTarget
+}
+
+private val PANEL_KNOBS = listOf(
+    "master" to "MASTER",
+    "enc${Fm1Panel.SELECT.id}" to Fm1Panel.SELECT.short,
+    "enc${Fm1Panel.PRESETS.id}" to Fm1Panel.PRESETS.short,
+    "enc${Fm1Panel.ALGORITHM.id}" to Fm1Panel.ALGORITHM.short,
+) + Fm1Panel.KNOBS.map { "enc${it.id}" to it.short }
+
+private val CURATED_COLORS = listOf(
+    Color(0xFF26272B), // Charcoal
+    Color(0xFF54565A), // Slate
+    Color(0xFFF2EFE9), // Warm White
+    Color(0xFFEC5316), // Orange
+    Color(0xFFD94343), // Coral Red
+    Color(0xFFF0A030), // Amber
+    Color(0xFF6CD4B9), // Mint
+    Color(0xFF42A19C), // Teal
+    Color(0xFF58A6D8), // Sky
+    Color(0xFF436586), // Steel Blue
+    Color(0xFF8161AF), // Violet
+    Color(0xFFD86CC2), // Magenta
+)
+
+@Composable
+private fun KeysColorRow(activeFinish: Finish, customColor: Color?, onClick: () -> Unit) {
+    val shown = customColor ?: activeFinish.naturalTop
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            Modifier.size(28.dp).clip(CircleShape).background(shown)
+                .border(1.5.dp, if (customColor != null) Tokens.amber else Tokens.line, CircleShape),
+        )
+        Column(Modifier.weight(1f)) {
+            Text("Keys colour", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                if (customColor != null) "Custom" else "Preset (${activeFinish.label})",
+                style = MaterialTheme.typography.bodySmall,
+                color = Tokens.dim,
+            )
+        }
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = Tokens.dim)
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun KnobColorsPicker(
+    activeFinish: Finish,
+    knobColors: Map<String, Int>,
+    onPickKnob: (key: String, label: String) -> Unit,
+    onResetAll: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Knob colours", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            if (knobColors.isNotEmpty()) {
+                TextButton(onClick = onResetAll) { Text("Reset all") }
+            }
+        }
+        FlowRow(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            for ((key, label) in PANEL_KNOBS) {
+                val custom = knobColors[key]?.let(::Color)
+                val (hi, lo, _) = knobShade(activeFinish, custom)
+                Column(
+                    Modifier.width(64.dp).clip(RoundedCornerShape(12.dp))
+                        .clickable { onPickKnob(key, label) }
+                        .padding(vertical = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Box(
+                        Modifier.size(36.dp)
+                            .border(2.dp, if (custom != null) Tokens.amber else Color.Transparent, CircleShape)
+                            .padding(3.dp)
+                            .clip(CircleShape)
+                            .background(Brush.verticalGradient(listOf(hi, lo)))
+                            .border(1.dp, Tokens.line, CircleShape),
+                    )
+                    Text(
+                        label,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (custom != null) Tokens.amberHi else Tokens.dim,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ColorPickerDialog(
+    title: String,
+    initial: Color?,
+    fallback: Color,
+    showApplyAll: Boolean,
+    onApplyAll: (Color?) -> Unit,
+    onConfirm: (Color?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val startColor = initial ?: fallback
+    val hsv = remember { FloatArray(3).also { android.graphics.Color.colorToHSV(startColor.toArgb(), it) } }
+    var hue by remember { mutableFloatStateOf(hsv[0]) }
+    var sat by remember { mutableFloatStateOf(hsv[1]) }
+    var valV by remember { mutableFloatStateOf(hsv[2]) }
+    var usePreset by remember { mutableStateOf(initial == null) }
+
+    val currentColor = remember(hue, sat, valV) {
+        Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, valV)))
+    }
+    val selectedOrNull: Color? = if (usePreset) null else currentColor
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(
+                        Modifier.size(40.dp).clip(CircleShape)
+                            .background(selectedOrNull ?: fallback)
+                            .border(1.5.dp, Tokens.line, CircleShape),
+                    )
+                    Text(
+                        if (usePreset) "Using preset colour" else "Custom colour",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Tokens.dim,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = {
+                        usePreset = true
+                        val resetHsv = FloatArray(3)
+                        android.graphics.Color.colorToHSV(fallback.toArgb(), resetHsv)
+                        hue = resetHsv[0]; sat = resetHsv[1]; valV = resetHsv[2]
+                    }) { Text("Reset") }
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (c in CURATED_COLORS) {
+                        val isMatch = !usePreset && c.toArgb() == currentColor.toArgb()
+                        Box(
+                            Modifier.size(32.dp)
+                                .border(2.dp, if (isMatch) Tokens.amber else Color.Transparent, CircleShape)
+                                .padding(3.dp)
+                                .clip(CircleShape)
+                                .background(c)
+                                .border(1.dp, Tokens.line, CircleShape)
+                                .clickable {
+                                    usePreset = false
+                                    val cHsv = FloatArray(3)
+                                    android.graphics.Color.colorToHSV(c.toArgb(), cHsv)
+                                    hue = cHsv[0]; sat = cHsv[1]; valV = cHsv[2]
+                                },
+                        )
+                    }
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Hue", style = MaterialTheme.typography.labelSmall, color = Tokens.dim)
+                    Slider(
+                        value = hue,
+                        onValueChange = { usePreset = false; hue = it },
+                        valueRange = 0f..360f,
+                        colors = SliderDefaults.colors(thumbColor = Tokens.amber, activeTrackColor = Tokens.amber),
+                    )
+                    Text("Saturation", style = MaterialTheme.typography.labelSmall, color = Tokens.dim)
+                    Slider(
+                        value = sat,
+                        onValueChange = { usePreset = false; sat = it },
+                        valueRange = 0f..1f,
+                        colors = SliderDefaults.colors(thumbColor = Tokens.amber, activeTrackColor = Tokens.amber),
+                    )
+                    Text("Brightness", style = MaterialTheme.typography.labelSmall, color = Tokens.dim)
+                    Slider(
+                        value = valV,
+                        onValueChange = { usePreset = false; valV = it },
+                        valueRange = 0.12f..1f,
+                        colors = SliderDefaults.colors(thumbColor = Tokens.amber, activeTrackColor = Tokens.amber),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (showApplyAll) {
+                    TextButton(onClick = { onApplyAll(selectedOrNull) }) { Text("All knobs") }
+                }
+                Button(onClick = { onConfirm(selectedOrNull) }) { Text("Done") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }

@@ -1,16 +1,28 @@
 package com.markwhite.harbor
 
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.markwhite.harbor.data.Catalog
 import com.markwhite.harbor.data.FirmwareNotes
+import com.markwhite.harbor.data.KnobGesture
 import com.markwhite.harbor.engine.EngineStatus
 import com.markwhite.harbor.ui.LayoutMode
 import com.markwhite.harbor.ui.PerfWatch
 import com.markwhite.harbor.ui.layoutModeOf
+import com.markwhite.harbor.ui.panel.Dark
+import com.markwhite.harbor.ui.panel.Finishes
 import com.markwhite.harbor.ui.panel.Fm1Panel
 import com.markwhite.harbor.ui.panel.KeybedGeometry
 import com.markwhite.harbor.ui.panel.ONE_ROW
 import com.markwhite.harbor.ui.panel.TWO_TIERS
+import com.markwhite.harbor.ui.panel.angleDeltaDeg
+import com.markwhite.harbor.ui.panel.finishOf
+import com.markwhite.harbor.ui.panel.initialCircularMode
+import com.markwhite.harbor.ui.panel.isCircularMotion
+import com.markwhite.harbor.ui.panel.knobShade
+import com.markwhite.harbor.ui.panel.linearKnobDelta
+import com.markwhite.harbor.ui.panel.withKeysColor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -110,5 +122,46 @@ class PanelLogicTest {
         assertEquals(1, FirmwareNotes.preferredChannel("mvave"))
         assertTrue(FirmwareNotes.makesNoSound("ctl"))
         assertTrue(FirmwareNotes.midiHint("felucca")!!.contains("1–4"))
+    }
+
+    @Test
+    fun knobGesturesMatchVerticalHorizontalCircularAndBoth() {
+        assertEquals(false, initialCircularMode(KnobGesture.Vertical))
+        assertEquals(false, initialCircularMode(KnobGesture.Horizontal))
+        assertEquals(true, initialCircularMode(KnobGesture.Circular))
+        assertNull(initialCircularMode(KnobGesture.Both))
+
+        // Vertical: up (-y) turns clockwise (+), Horizontal: right (+x) turns clockwise (+)
+        assertEquals(12f, linearKnobDelta(KnobGesture.Vertical, Offset(99f, -12f)), 1e-4f)
+        assertEquals(15f, linearKnobDelta(KnobGesture.Horizontal, Offset(15f, 99f)), 1e-4f)
+        assertEquals(-15f, linearKnobDelta(KnobGesture.Horizontal, Offset(-15f, 0f)), 1e-4f)
+
+        // Tangential motion around center counts as circular; radial motion does not
+        assertTrue(isCircularMotion(Offset(50f, 50f), Offset(50f, 10f), Offset(10f, 0f)))
+        assertFalse(isCircularMotion(Offset(50f, 50f), Offset(50f, 10f), Offset(0f, -10f)))
+
+        // Angle wraparound from +170° to -170° is +20° clockwise
+        val start = Math.toRadians(170.0).toFloat()
+        val (deg, _) = angleDeltaDeg(Offset.Zero, Offset(-1f, -0.17632698f), start)
+        assertTrue(deg in 19f..21f)
+    }
+
+    @Test
+    fun finishPresetsAndCustomKeyAndKnobColors() {
+        assertEquals(
+            listOf("Dark", "Orange", "Gray", "Dark Green", "Blue", "Purple", "White Green", "White Purple"),
+            Finishes.map { it.label },
+        )
+        assertEquals(Dark, finishOf("graphite"))
+        assertEquals("white_purple", finishOf("white_purple").id)
+
+        val mint = Color(0xFF6CD4B9)
+        val customKeys = Dark.withKeysColor(mint)
+        assertEquals(mint, customKeys.naturalTop)
+        assertEquals(Dark.bodyTop, customKeys.bodyTop)
+
+        val (_, _, lightPtr) = knobShade(Dark, Color(0xFF101010))
+        val (_, _, darkPtr) = knobShade(Dark, Color(0xFFF0F0F0))
+        assertTrue(lightPtr != darkPtr)
     }
 }

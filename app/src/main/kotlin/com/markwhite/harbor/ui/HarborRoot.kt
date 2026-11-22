@@ -32,6 +32,7 @@ import com.markwhite.harbor.engine.Phase
 import com.markwhite.harbor.engine.SaveState
 import com.markwhite.harbor.midi.HarborMidiService
 import com.markwhite.harbor.ui.panel.PanelPrefs
+import com.markwhite.harbor.ui.panel.withKeysColor
 import com.markwhite.harbor.ui.screens.AboutScreen
 import com.markwhite.harbor.ui.screens.AudioScreen
 import com.markwhite.harbor.ui.screens.ControlsScreen
@@ -111,6 +112,9 @@ fun HarborRoot(app: HarborApp, pending: PendingOpen?, onPendingHandled: () -> Un
     val ui = UiState(phase, docked, harbor.status, save, activity, connected.size + clients, connected.map { it.name } + List(clients) { "An app on this phone" },
         usbHint, buffer, recording != null, ::go)
 
+    val finishId by s.finish.collectAsState()
+    val keysColorArgb by s.keysColor.collectAsState()
+    val knobColorsArgb by s.knobColors.collectAsState()
     val prefs = PanelPrefs(
         knobGesture = s.knobGesture.collectAsState().value,
         dpPerDetent = s.knobDpPerDetent.collectAsState().value,
@@ -122,7 +126,9 @@ fun HarborRoot(app: HarborApp, pending: PendingOpen?, onPendingHandled: () -> Un
         noteNames = s.noteNames.collectAsState().value,
         smoothLcd = s.smoothLcd.collectAsState().value,
         flat = s.flatPanel.collectAsState().value,
-        finish = com.markwhite.harbor.ui.panel.finishOf(s.finish.collectAsState().value),
+        finish = com.markwhite.harbor.ui.panel.finishOf(finishId)
+            .withKeysColor(keysColorArgb?.let { androidx.compose.ui.graphics.Color(it) }),
+        knobColors = knobColorsArgb.mapValues { androidx.compose.ui.graphics.Color(it.value) },
     )
     val leds = com.markwhite.harbor.ui.panel.rememberLeds(harbor)
     val master by harbor.master.collectAsState()

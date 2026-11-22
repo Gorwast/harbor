@@ -97,7 +97,8 @@ data class PanelPrefs(
     val noteNames: Int = 0,
     val smoothLcd: Boolean = false,
     val flat: Boolean = false,
-    val finish: Finish = Graphite,
+    val finish: Finish = Dark,
+    val knobColors: Map<String, Color> = emptyMap(),
 )
 
 /** What the panel sends to the machine. */
@@ -185,11 +186,7 @@ fun Encoder(
                         val c = Offset(this.size.width / 2f, this.size.height / 2f)
                         var acc = 0f
                         var travel = 0f
-                        var circular: Boolean? = when (p.knobGesture) {
-                            KnobGesture.Vertical -> false
-                            KnobGesture.Circular -> true
-                            KnobGesture.Both -> null
-                        }
+                        var circular: Boolean? = initialCircularMode(p.knobGesture)
                         var lastAngle = atan2(down.position.y - c.y, down.position.x - c.x)
                         var angleAcc = 0f
                         var up = down
@@ -202,22 +199,17 @@ fun Encoder(
                             ch.consume()
                             travel += abs(d.x) + abs(d.y)
                             if (circular == null && travel > 16.dp.toPx()) {
-                                // tangential motion decides: circular; mostly vertical: drag
-                                val r = ch.position - c
-                                val radial = abs(r.x * d.x + r.y * d.y) / (r.getDistance() + 1e-3f)
-                                circular = radial < 0.5f * d.getDistance()
+                                // tangential motion decides: circular; mostly linear: drag
+                                circular = isCircularMotion(c, ch.position, d)
                             }
                             if (circular == true) {
-                                val a = atan2(ch.position.y - c.y, ch.position.x - c.x)
-                                var da = a - lastAngle
-                                if (da > PI) da -= (2 * PI).toFloat()
-                                if (da < -PI) da += (2 * PI).toFloat()
-                                lastAngle = a
-                                angleAcc += Math.toDegrees(da.toDouble()).toFloat()
+                                val (deg, nextAngle) = angleDeltaDeg(c, ch.position, lastAngle)
+                                lastAngle = nextAngle
+                                angleAcc += deg
                                 val n = (angleAcc / 15f).toInt()
                                 if (n != 0) { angleAcc -= n * 15f; turn(n) }
                             } else if (travel > slop) {
-                                acc += -d.y // up is clockwise
+                                acc += linearKnobDelta(p.knobGesture, d)
                                 val n = (acc / pxPerDetent).toInt()
                                 if (n != 0) { acc -= n * pxPerDetent; turn(n) }
                             }
@@ -235,7 +227,12 @@ fun Encoder(
             val tint = if (accent) f.accent else f.silkDim
             if (glow) bloom(center, big * 1.1f, f.accent, 0.22f)
             ticks(center, big, tint.copy(alpha = if (glow) 1f else if (accent) 0.6f else 0.55f))
-            knob(f, center, big * 0.8f, angle, if (accent) f.accent else f.pointer, glowing = accent || glow)
+            knob(
+                f, center, big * 0.8f, angle,
+                if (accent) f.accent else f.pointer,
+                glowing = accent || glow,
+                customColor = p.knobColors["enc${enc.id}"],
+            )
         }
         if (showLabel) Text(enc.short, style = Silk.copy(color = prefs.finish.silk), maxLines = 1)
     }
@@ -249,6 +246,7 @@ fun MasterPot(value: Int, size: Dp, prefs: PanelPrefs, input: PanelInput, modifi
     val haptics = rememberHaptics()
     val fullTravel = with(LocalDensity.current) { 200.dp.toPx() }
     val v by rememberUpdatedState(value)
+    val p by rememberUpdatedState(prefs)
     var dragging by remember { mutableStateOf(false) }
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Box(contentAlignment = Alignment.Center) {
@@ -267,17 +265,33 @@ fun MasterPot(value: Int, size: Dp, prefs: PanelPrefs, input: PanelInput, modifi
                             val down = awaitFirstDown(requireUnconsumed = false)
                             down.consume()
                             dragging = true
+                            val c = Offset(this.size.width / 2f, this.size.height / 2f)
                             var acc = v.toFloat()
+                            var travel = 0f
+                            var circular: Boolean? = initialCircularMode(p.knobGesture)
+                            var lastAngle = atan2(down.position.y - c.y, down.position.x - c.x)
                             while (true) {
                                 val ev = awaitPointerEvent()
                                 val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
                                 if (!ch.pressed) break
-                                val before = acc
-                                acc = (acc - ch.positionChange().y / fullTravel * 1023f).coerceIn(0f, 1023f)
+                                val d = ch.positionChange()
                                 ch.consume()
+                                travel += abs(d.x) + abs(d.y)
+                                if (circular == null && travel > 16.dp.toPx()) {
+                                    circular = isCircularMotion(c, ch.position, d)
+                                }
+                                val before = acc
+                                val step = if (circular == true) {
+                                    val (deg, nextAngle) = angleDeltaDeg(c, ch.position, lastAngle)
+                                    lastAngle = nextAngle
+                                    deg / 270f * 1023f
+                                } else {
+                                    linearKnobDelta(p.knobGesture, d) / fullTravel * 1023f
+                                }
+                                acc = (acc + step).coerceIn(0f, 1023f)
                                 if (acc.toInt() != before.toInt()) {
                                     input.master(acc.toInt())
-                                    if (prefs.hapticKnobs && (acc == 0f || acc == 1023f) && before != acc) haptics.stop()
+                                    if (p.hapticKnobs && (acc == 0f || acc == 1023f) && before != acc) haptics.stop()
                                 }
                             }
                             dragging = false
@@ -293,7 +307,7 @@ fun MasterPot(value: Int, size: Dp, prefs: PanelPrefs, input: PanelInput, modifi
                 drawArc(Color.Black.copy(alpha = 0.45f), 135f, 270f, false, tl, ringSize, style = Stroke(big * 0.075f, cap = StrokeCap.Round))
                 glowArc(center, ring, 135f, 270f * t, big * 0.07f, big * 0.12f, f.accent.copy(alpha = 0.7f))
                 if (t > 0f) drawArc(f.accent, 135f, 270f * t, false, tl, ringSize, style = Stroke(big * 0.06f, cap = StrokeCap.Round))
-                knob(f, center, big * 0.74f, -135f + 270f * t, f.pointer, glowing = false)
+                knob(f, center, big * 0.74f, -135f + 270f * t, f.pointer, glowing = false, customColor = p.knobColors["master"])
             }
             if (dragging) Text("${value * 100 / 1023}%", style = Silk.copy(fontSize = 11.sp, color = LedAmberHot))
         }
@@ -493,9 +507,19 @@ private fun DrawScope.ticks(c: Offset, big: Float, color: Color, count: Int = 11
  * A knob from above, lit from over the top edge: its shadow, a knurled skirt that turns with it,
  * a glossy face whose highlight doesn't, and the pointer ([angle] degrees, 0 up, clockwise).
  */
-private fun DrawScope.knob(f: Finish, c: Offset, r: Float, angle: Float, pointer: Color, glowing: Boolean) {
+private fun DrawScope.knob(
+    f: Finish,
+    c: Offset,
+    r: Float,
+    angle: Float,
+    pointer: Color,
+    glowing: Boolean,
+    customColor: Color? = null,
+) {
+    val (knobHi, knobLo, resolvedPointer) = knobShade(f, customColor)
+    val effectivePointer = if (customColor != null && !glowing && pointer == f.pointer) resolvedPointer else pointer
     softShadow(Offset(c.x, c.y + r * 0.16f), r * 0.98f, r * 0.22f, Color.Black.copy(alpha = 0.75f))
-    drawCircle(Brush.verticalGradient(listOf(f.knobHi, f.knobLo), startY = c.y - r, endY = c.y + r), r, c)
+    drawCircle(Brush.verticalGradient(listOf(knobHi, knobLo), startY = c.y - r, endY = c.y + r), r, c)
     val knurls = 44
     for (i in 0 until knurls) {
         val a = Math.toRadians(i * 360.0 / knurls + angle)
@@ -507,7 +531,7 @@ private fun DrawScope.knob(f: Finish, c: Offset, r: Float, angle: Float, pointer
     }
     val face = r * 0.82f
     drawCircle(Color.Black.copy(alpha = 0.65f), face + r * 0.03f, c)
-    drawCircle(Brush.radialGradient(listOf(f.knobHi, f.knobLo), center = Offset(c.x - face * 0.2f, c.y - face * 0.55f), radius = face * 1.6f), face, c)
+    drawCircle(Brush.radialGradient(listOf(knobHi, knobLo), center = Offset(c.x - face * 0.2f, c.y - face * 0.55f), radius = face * 1.6f), face, c)
     // the face's rim catches the light along the top; a soft glint sits up and to the left
     val rim = face * 0.94f
     drawArc(
@@ -520,8 +544,8 @@ private fun DrawScope.knob(f: Finish, c: Offset, r: Float, angle: Float, pointer
     val co = cos(a).toFloat()
     val p0 = Offset(c.x + s * face * 0.32f, c.y - co * face * 0.32f)
     val p1 = Offset(c.x + s * face * 0.86f, c.y - co * face * 0.86f)
-    if (glowing) glowLine(p0, p1, r * 0.1f, r * 0.14f, pointer.copy(alpha = 0.8f))
-    drawLine(pointer, p0, p1, strokeWidth = r * 0.09f, cap = StrokeCap.Round)
+    if (glowing) glowLine(p0, p1, r * 0.1f, r * 0.14f, effectivePointer.copy(alpha = 0.8f))
+    drawLine(effectivePointer, p0, p1, strokeWidth = r * 0.09f, cap = StrokeCap.Round)
 }
 
 /**
@@ -565,4 +589,29 @@ fun LcdBezel(size: Dp, modifier: Modifier = Modifier, content: @Composable (Dp) 
             }
         }
     }
+}
+
+internal fun initialCircularMode(gesture: KnobGesture): Boolean? = when (gesture) {
+    KnobGesture.Vertical, KnobGesture.Horizontal -> false
+    KnobGesture.Circular -> true
+    KnobGesture.Both -> null
+}
+
+internal fun isCircularMotion(center: Offset, pos: Offset, delta: Offset): Boolean {
+    val r = pos - center
+    val radial = abs(r.x * delta.x + r.y * delta.y) / (r.getDistance() + 1e-3f)
+    return radial < 0.5f * delta.getDistance()
+}
+
+internal fun angleDeltaDeg(center: Offset, pos: Offset, lastAngle: Float): Pair<Float, Float> {
+    val a = atan2(pos.y - center.y, pos.x - center.x)
+    var da = a - lastAngle
+    if (da > PI) da -= (2 * PI).toFloat()
+    if (da < -PI) da += (2 * PI).toFloat()
+    return Math.toDegrees(da.toDouble()).toFloat() to a
+}
+
+internal fun linearKnobDelta(gesture: KnobGesture, delta: Offset): Float = when (gesture) {
+    KnobGesture.Horizontal -> delta.x // right is clockwise
+    else -> -delta.y // up is clockwise
 }
