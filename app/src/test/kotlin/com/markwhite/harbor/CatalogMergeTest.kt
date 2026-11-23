@@ -1,6 +1,8 @@
 package com.markwhite.harbor
 
 import com.markwhite.harbor.data.Catalog
+import com.markwhite.harbor.data.FirmwareCategory
+import com.markwhite.harbor.data.FirmwareSort
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -49,5 +51,28 @@ class CatalogMergeTest {
         assertEquals("https://thefirmwarehub.com/img/fm1quest.png", merged.firmwares.first { it.id == "quest" }.image)
         assertTrue(merged.firmwares.filter { it.hubOnly }.all { it.image == Catalog.hubImage(it.id) })
         assertNull(merged.firmwares.first { it.id == "mvave" }.image)
+    }
+
+    @Test
+    fun parsesHubKindsAndSupportsSortingAndCategoryFiltering() {
+        val zp12 = merged.firmwares.first { it.id == "zp12" }
+        assertTrue("drums" in zp12.kinds)
+        assertTrue(zp12.installs > 0)
+        assertTrue(zp12.stars > 0)
+        assertTrue(zp12.added.isNotBlank())
+        assertTrue(zp12.updated.isNotBlank())
+
+        val drums = Catalog.filterAndSort(merged.firmwares, "", FirmwareCategory.Drums, FirmwareSort.MostInstalled)
+        assertTrue(drums.isNotEmpty())
+        assertTrue(drums.zipWithNext { a, b -> a.installs >= b.installs }.all { it })
+
+        val topRated = Catalog.filterAndSort(merged.firmwares, "", FirmwareCategory.All, FirmwareSort.TopRated)
+        assertTrue(topRated.zipWithNext { a, b -> a.stars >= b.stars }.all { it })
+
+        val az = Catalog.filterAndSort(merged.firmwares, "", FirmwareCategory.All, FirmwareSort.NameAZ)
+        assertTrue(az.zipWithNext { a, b -> a.name.lowercase() <= b.name.lowercase() }.all { it })
+
+        val samplers = Catalog.filterAndSort(merged.firmwares, "", FirmwareCategory.Sampler, FirmwareSort.Default)
+        assertTrue(samplers.any { it.id == "zp12" })
     }
 }

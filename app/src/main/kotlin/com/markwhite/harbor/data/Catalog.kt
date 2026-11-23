@@ -7,6 +7,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -44,9 +48,49 @@ data class FirmwareEntry(
     val beta: Boolean = false,
     /** a screenshot (the Hub's), any size; it may be missing or broken, so it is only ever a nicety */
     val image: String? = null,
+    /** category tags from the Hub (`synth`, `drums`, `groove`, `chords`, `dev`, `other`, `sampler`) */
+    val kinds: List<String> = emptyList(),
+    val installs: Int = 0,
+    val stars: Int = 0,
+    val added: String = "",
+    val updated: String = "",
+    val chip: String? = null,
+    val release: String? = null,
 ) {
     val title: String get() = if (version.isBlank()) name else "$name $version"
     val playable: Boolean get() = `package` != null || byo
+}
+
+enum class FirmwareSort(val label: String) {
+    Default("Default"),
+    MostInstalled("Most installed"),
+    TopRated("Top rated"),
+    WhatsNew("What's new"),
+    RecentlyUpdated("Recently updated"),
+    NameAZ("A–Z"),
+}
+
+enum class FirmwareCategory(val label: String) {
+    All("All"),
+    Synth("Synth"),
+    Drums("Drums"),
+    Sampler("Sampler"),
+    Groovebox("Groovebox"),
+    Chords("Chords"),
+    Dev("Dev"),
+    Other("Other"),
+    ;
+
+    fun matches(e: FirmwareEntry): Boolean = when (this) {
+        All -> true
+        Synth -> "synth" in e.kinds
+        Drums -> "drums" in e.kinds
+        Sampler -> "sampler" in e.kinds || e.about.contains("sampler", ignoreCase = true) || e.about.contains("sampling", ignoreCase = true)
+        Groovebox -> "groove" in e.kinds || "groovebox" in e.kinds
+        Chords -> "chords" in e.kinds
+        Dev -> "dev" in e.kinds
+        Other -> "other" in e.kinds || e.kinds.isEmpty()
+    }
 }
 
 @Serializable
@@ -73,7 +117,21 @@ data class HubEntry(
     val beta: Boolean = false,
     val repo: String? = null,
     val source: String? = null,
-)
+    val kind: JsonElement? = null,
+    val installs: Int = 0,
+    val stars: Int = 0,
+    val added: String = "",
+    val date: String = "",
+    val published: String = "",
+    val chip: String? = null,
+    val release: String? = null,
+) {
+    fun parsedKinds(): List<String> = when (kind) {
+        is JsonPrimitive -> listOfNotNull(kind.contentOrNull?.lowercase()?.takeIf { it.isNotBlank() })
+        is JsonArray -> kind.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.lowercase()?.takeIf { s -> s.isNotBlank() } }
+        else -> emptyList()
+    }
+}
 
 /** Per-firmware notes the catalog doesn't carry yet (ui-spec GAP-5), from fm1-emu's guide. */
 object FirmwareNotes {
@@ -133,14 +191,15 @@ class Catalog(private val context: Context) {
             store(cache, text)
             listed = parsed
         }
-        // the hub's own cache key: one fetch per day
-        val b = runCatching {
+        // the hub's rule: read catalog.json at most once a day
+        val hubStale = !hubCache.exists() || System.currentTimeMillis() - hubCache.lastModified() >= 24 * 3600_000L
+        val b = if (hubStale) runCatching {
             val text = fetch(HUB_CATALOG_URL + "?" + java.time.LocalDate.now(java.time.ZoneOffset.UTC))
             val parsed = parseHub(text)
             require(parsed.firmwares.isNotEmpty()) { "empty hub catalog" }
             store(hubCache, text)
             hub = parsed
-        }
+        } else Result.success(Unit)
         if (a.isSuccess) refreshedAt = System.currentTimeMillis()
         _entries.value = shown(merge(listed, hub))
         a.onFailure { com.markwhite.harbor.engine.EventLog.w("catalog refresh failed: ${it.message}") }
@@ -150,6 +209,7 @@ class Catalog(private val context: Context) {
 
     private fun fetch(url: String): String {
         val conn = URL(url).openConnection() as HttpURLConnection
+        conn.setRequestProperty("User-Agent", USER_AGENT)
         conn.connectTimeout = 10_000
         conn.readTimeout = 15_000
         return conn.inputStream.bufferedReader().use { it.readText() }
@@ -165,6 +225,7 @@ class Catalog(private val context: Context) {
         const val CATALOG_URL = "https://joakimeriksson.github.io/fm1-emu/firmwares.json"
         const val HUB = "https://thefirmwarehub.com/"
         const val HUB_CATALOG_URL = HUB + "catalog.json"
+        val USER_AGENT: String = "Harbor/${com.markwhite.harbor.BuildConfig.VERSION_NAME} (Android; +https://github.com/Gorwast/harbor)"
         private val json = Json { ignoreUnknownKeys = true }
 
         /**
@@ -210,6 +271,13 @@ class Catalog(private val context: Context) {
                     hub = h.id,
                     beta = h.beta,
                     image = hubImage(h.id),
+                    kinds = h.parsedKinds(),
+                    installs = h.installs,
+                    stars = h.stars,
+                    added = h.added,
+                    updated = h.published.ifBlank { h.date },
+                    chip = h.chip,
+                    release = h.release,
                 )
             }
             val listedIds = listed.firmwares.map { it.id }.toSet()
@@ -218,9 +286,32 @@ class Catalog(private val context: Context) {
                     id = h.id, name = h.name.ifBlank { h.id }, version = h.version, author = h.author, about = h.what,
                     repo = h.source ?: h.repo?.let { "https://github.com/$it" }, `package` = HUB + h.pkg, hub = h.id,
                     sha256 = h.sha256, hubOnly = true, beta = h.beta, image = hubImage(h.id),
+                    kinds = h.parsedKinds(), installs = h.installs, stars = h.stars,
+                    added = h.added, updated = h.published.ifBlank { h.date }, chip = h.chip, release = h.release,
                 )
             }.sortedBy { it.name.lowercase() }
             return listed.copy(firmwares = entries + extra)
+        }
+
+        fun filterAndSort(
+            entries: List<FirmwareEntry>,
+            query: String,
+            category: FirmwareCategory,
+            sort: FirmwareSort,
+        ): List<FirmwareEntry> {
+            val filtered = entries.filter { e ->
+                val matchesQuery = query.isBlank() ||
+                    listOf(e.name, e.author, e.about).any { it.contains(query, ignoreCase = true) }
+                matchesQuery && category.matches(e)
+            }
+            return when (sort) {
+                FirmwareSort.Default -> filtered
+                FirmwareSort.MostInstalled -> filtered.sortedWith(compareByDescending<FirmwareEntry> { it.installs }.thenBy { it.name.lowercase() })
+                FirmwareSort.TopRated -> filtered.sortedWith(compareByDescending<FirmwareEntry> { it.stars }.thenByDescending { it.installs }.thenBy { it.name.lowercase() })
+                FirmwareSort.WhatsNew -> filtered.sortedWith(compareByDescending<FirmwareEntry> { it.added }.thenByDescending { it.updated }.thenBy { it.name.lowercase() })
+                FirmwareSort.RecentlyUpdated -> filtered.sortedWith(compareByDescending<FirmwareEntry> { it.updated }.thenBy { it.name.lowercase() })
+                FirmwareSort.NameAZ -> filtered.sortedBy { it.name.lowercase() }
+            }
         }
     }
 }

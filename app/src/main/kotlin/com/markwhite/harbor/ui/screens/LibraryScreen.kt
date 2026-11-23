@@ -30,18 +30,24 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -66,8 +72,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.markwhite.harbor.HarborApp
+import com.markwhite.harbor.data.Catalog
+import com.markwhite.harbor.data.FirmwareCategory
 import com.markwhite.harbor.data.FirmwareEntry
 import com.markwhite.harbor.data.FirmwareNotes
+import com.markwhite.harbor.data.FirmwareSort
 import com.markwhite.harbor.ui.LayoutMode
 import com.markwhite.harbor.ui.Screen
 import com.markwhite.harbor.ui.UiState
@@ -88,6 +97,9 @@ fun LibraryScreen(app: HarborApp, ui: UiState, mode: LayoutMode, onBack: () -> U
     var error by remember { mutableStateOf<String?>(null) }
     var byoFor by remember { mutableStateOf<FirmwareEntry?>(null) }
     var refreshing by remember { mutableStateOf(false) }
+    var sort by remember { mutableStateOf(FirmwareSort.Default) }
+    var category by remember { mutableStateOf(FirmwareCategory.All) }
+    var sortMenu by remember { mutableStateOf(false) }
 
     val open = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         val forEntry = byoFor
@@ -111,8 +123,8 @@ fun LibraryScreen(app: HarborApp, ui: UiState, mode: LayoutMode, onBack: () -> U
         ui.go(Screen.Play)
     }
 
-    val list = catalog.firmwares.filter {
-        query.isBlank() || listOf(it.name, it.author, it.about).any { f -> f.contains(query, ignoreCase = true) }
+    val list = remember(catalog.firmwares, query, category, sort) {
+        Catalog.filterAndSort(catalog.firmwares, query, category, sort)
     }
     val wide = mode == LayoutMode.Expanded
 
@@ -139,27 +151,93 @@ fun LibraryScreen(app: HarborApp, ui: UiState, mode: LayoutMode, onBack: () -> U
             Box(Modifier.weight(1f).fillMaxHeight()) {
                 LazyColumn(contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 96.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     item {
-                        Text("${catalog.firmwares.size} firmwares for the FM-1", style = MaterialTheme.typography.bodyMedium, color = Tokens.dim)
-                    }
-                    if (list.isEmpty()) item { Text("No firmware by that name in the harbor.") }
-                    val (checked, hubOnly) = list.partition { !it.hubOnly }
-                    items(checked, key = { it.id }) { e ->
-                        val kept = installed.filter { it.catalogId == e.id }.maxByOrNull { it.addedAt }
-                        FirmwareCard(app, e, kept != null, ui.docked?.entry?.id == e.id, kept?.let { app.settings.clock(it.sha) }, kept?.size,
-                            onPlay = { play(e) }, onDetails = { selected = e }, onOpenByo = { openFile(e) })
-                    }
-                    if (hubOnly.isNotEmpty()) {
-                        item {
-                            Column(Modifier.padding(top = 8.dp)) {
-                                Section("More from the FM-1 Firmware Hub")
-                                Text("Newer firmwares the emulator's authors haven't checked yet. Most run; some may not.",
-                                    style = MaterialTheme.typography.bodySmall, color = Tokens.dim, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    if (list.size == catalog.firmwares.size) "${catalog.firmwares.size} firmwares for the FM-1"
+                                    else "${list.size} of ${catalog.firmwares.size} firmwares",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = Tokens.dim,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Box {
+                                    OutlinedButton(
+                                        onClick = { sortMenu = true },
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    ) {
+                                        Text("Sort: ${sort.label}", style = MaterialTheme.typography.labelMedium)
+                                        Icon(Icons.Filled.ArrowDropDown, null, Modifier.size(18.dp))
+                                    }
+                                    DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
+                                        for (s in FirmwareSort.entries) {
+                                            DropdownMenuItem(
+                                                text = { Text(s.label, color = if (s == sort) Tokens.amberHi else Tokens.ink) },
+                                                onClick = { sort = s; sortMenu = false },
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            Row(
+                                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                for (c in FirmwareCategory.entries) {
+                                    FilterChip(
+                                        selected = category == c,
+                                        onClick = { category = c },
+                                        label = { Text(c.label) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = Tokens.amber.copy(alpha = 0.2f),
+                                            selectedLabelColor = Tokens.amberHi,
+                                        ),
+                                    )
+                                }
                             }
                         }
-                        items(hubOnly, key = { it.id }) { e ->
+                    }
+                    if (list.isEmpty()) item { Text("No firmwares match your filter.") }
+                    if (sort == FirmwareSort.Default) {
+                        val (checked, hubOnly) = list.partition { !it.hubOnly }
+                        items(checked, key = { it.id }) { e ->
                             val kept = installed.filter { it.catalogId == e.id }.maxByOrNull { it.addedAt }
                             FirmwareCard(app, e, kept != null, ui.docked?.entry?.id == e.id, kept?.let { app.settings.clock(it.sha) }, kept?.size,
-                                onPlay = { play(e) }, onDetails = { selected = e }, onOpenByo = { openFile(e) })
+                                showStats = false, onPlay = { play(e) }, onDetails = { selected = e }, onOpenByo = { openFile(e) })
+                        }
+                        if (hubOnly.isNotEmpty()) {
+                            item {
+                                Column(Modifier.padding(top = 8.dp)) {
+                                    Section("More from the FM-1 Firmware Hub")
+                                    Text("Newer firmwares the emulator's authors haven't checked yet. Most run; some may not.",
+                                        style = MaterialTheme.typography.bodySmall, color = Tokens.dim, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
+                                }
+                            }
+                            items(hubOnly, key = { it.id }) { e ->
+                                val kept = installed.filter { it.catalogId == e.id }.maxByOrNull { it.addedAt }
+                                FirmwareCard(app, e, kept != null, ui.docked?.entry?.id == e.id, kept?.let { app.settings.clock(it.sha) }, kept?.size,
+                                    showStats = false, onPlay = { play(e) }, onDetails = { selected = e }, onOpenByo = { openFile(e) })
+                            }
+                        }
+                    } else {
+                        items(list, key = { it.id }) { e ->
+                            val kept = installed.filter { it.catalogId == e.id }.maxByOrNull { it.addedAt }
+                            FirmwareCard(app, e, kept != null, ui.docked?.entry?.id == e.id, kept?.let { app.settings.clock(it.sha) }, kept?.size,
+                                showStats = true, onPlay = { play(e) }, onDetails = { selected = e }, onOpenByo = { openFile(e) })
+                        }
+                    }
+                    item {
+                        Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                "Firmware list: The Firmware Hub – thefirmwarehub.com",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Tokens.amberHi,
+                                modifier = Modifier.clickable { openUrl(context, "https://thefirmwarehub.com") },
+                            )
+                            Text(
+                                "Compilation licensed under CC BY 4.0 (merged with fm1-emu's checked list; makers' texts and pictures remain theirs).",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Tokens.dim,
+                            )
                         }
                     }
                     val locals = installed.filter { it.catalogId == "local" }
@@ -212,7 +290,7 @@ fun LibraryScreen(app: HarborApp, ui: UiState, mode: LayoutMode, onBack: () -> U
 @Composable
 private fun FirmwareCard(
     app: HarborApp, e: FirmwareEntry, kept: Boolean, docked: Boolean, clock: Int?, size: Long?,
-    onPlay: () -> Unit, onDetails: () -> Unit, onOpenByo: () -> Unit,
+    showStats: Boolean, onPlay: () -> Unit, onDetails: () -> Unit, onOpenByo: () -> Unit,
 ) {
     Card(
         shape = RoundedCornerShape(20.dp),
@@ -232,6 +310,10 @@ private fun FirmwareCard(
             }
             Text(e.about, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                e.kinds.firstOrNull()?.let { k -> Text(k.replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelSmall, color = Tokens.dim) }
+                if (showStats && e.installs > 0) Text("${e.installs} installs", style = MaterialTheme.typography.labelSmall, color = Tokens.dim)
+                if (showStats && e.stars > 0) Text("★ ${e.stars}", style = MaterialTheme.typography.labelSmall, color = Tokens.dim)
+                if (showStats && e.hubOnly) Text("Hub", style = MaterialTheme.typography.labelSmall, color = Tokens.dim)
                 if (kept && size != null) Text("↓ kept · ${formatBytes(size)}", style = MaterialTheme.typography.labelSmall, color = Tokens.dim)
                 if (clock != null && clock < 240) Text("$clock MHz here", style = MaterialTheme.typography.labelSmall, color = Tokens.dim)
                 if (e.byo) Text("Bring your own", style = MaterialTheme.typography.labelSmall, color = Tokens.amber)

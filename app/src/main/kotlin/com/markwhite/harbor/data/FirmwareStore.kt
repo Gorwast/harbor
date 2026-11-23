@@ -76,6 +76,7 @@ class FirmwareStore(context: Context) {
 
     private fun fetch(entry: FirmwareEntry, url: String, expected: String?, progress: (Long, Long) -> Unit): InstalledPackage {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            setRequestProperty("User-Agent", Catalog.USER_AGENT)
             connectTimeout = 15_000
             readTimeout = 30_000
             instanceFollowRedirects = true

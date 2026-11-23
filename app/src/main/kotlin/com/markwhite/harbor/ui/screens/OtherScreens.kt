@@ -221,6 +221,18 @@ fun AboutScreen(app: HarborApp, onBack: () -> Unit) {
             Text(PRIVACY_SUMMARY, style = MaterialTheme.typography.bodySmall)
         }
         Section("Thanks") {
+            val ctx = LocalContext.current
+            Text(
+                "Firmware list: The Firmware Hub – thefirmwarehub.com",
+                style = MaterialTheme.typography.bodySmall,
+                color = Tokens.amberHi,
+                modifier = Modifier.clickable { openUrl(ctx, "https://thefirmwarehub.com") },
+            )
+            Text(
+                "Hub compilation licensed under CC BY 4.0 (merged with fm1-emu's checked list; each firmware's text, picture and licence remain its maker's).",
+                style = MaterialTheme.typography.bodySmall,
+                color = Tokens.dim,
+            )
             Text("To the FM-1 reverse-engineering and firmware community: FM-1-RE, Felucca and its many forks, the FM-1 Firmware Hub, and every firmware's author.",
                 style = MaterialTheme.typography.bodySmall)
             Text("Open-source components: AndroidX and Jetpack Compose (Apache-2.0), Kotlin and kotlinx (Apache-2.0), Barlow Condensed (OFL-1.1), " +
