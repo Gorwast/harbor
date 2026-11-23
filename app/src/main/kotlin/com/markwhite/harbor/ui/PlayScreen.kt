@@ -1,10 +1,23 @@
 package com.markwhite.harbor.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import com.markwhite.harbor.HarborApp
 import com.markwhite.harbor.midi.KnobBinding
 import com.markwhite.harbor.midi.MidiSource
@@ -15,6 +28,8 @@ import com.markwhite.harbor.ui.panel.MidiLearnOverlayState
 import com.markwhite.harbor.ui.screens.PanelAppearanceControls
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.RowScope
@@ -263,12 +278,28 @@ fun PlayScreen(ui: UiState, panel: PanelState, mode: LayoutMode, go: (Screen) ->
     }
     val openColors = { showColorsSheet = true }
 
+    val savedPortraitPage by app.settings.portraitPage.collectAsState()
+    val pagerState = rememberPagerState(initialPage = savedPortraitPage.coerceIn(0, 3), pageCount = { 4 })
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(savedPortraitPage) {
+        val target = savedPortraitPage.coerceIn(0, 3)
+        if (pagerState.currentPage != target) pagerState.scrollToPage(target)
+    }
+    LaunchedEffect(pagerState.currentPage) {
+        if (pagerState.currentPage != savedPortraitPage) app.settings.setPortraitPage(pagerState.currentPage)
+    }
+    val darkScreenMode = mode == LayoutMode.CompactPortrait && pagerState.currentPage == 3
+
     // the case on a cached layer of its own, behind everything (as a parent's background it would
     // be redrawn with every frame of the LCD)
     Box(Modifier.fillMaxSize()) {
-        if (compact) Spacer(Modifier.fillMaxSize().graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen).caseBody(panel.prefs.finish, corner = 0.dp))
+        if (darkScreenMode) {
+            Spacer(Modifier.fillMaxSize().background(Color.Black))
+        } else if (compact) {
+            Spacer(Modifier.fillMaxSize().graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen).caseBody(panel.prefs.finish, corner = 0.dp))
+        }
         Column(Modifier.fillMaxSize()) {
-            if (mode == LayoutMode.CompactPortrait && !performance) {
+            if (mode == LayoutMode.CompactPortrait && !performance && !darkScreenMode) {
                 HeaderCard(Modifier.padding(start = 8.dp, end = 8.dp, top = 6.dp, bottom = 2.dp)) {
                     FirmwareTitle(ui, go, Modifier.weight(1f))
                     Rec(ui, panel.harbor)
@@ -288,7 +319,13 @@ fun PlayScreen(ui: UiState, panel: PanelState, mode: LayoutMode, go: (Screen) ->
             CompositionLocalProvider(LocalMidiLearn provides learnOverlay) {
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     when (mode) {
-                        LayoutMode.CompactPortrait -> CompactPortraitPanel(panel, ui)
+                        LayoutMode.CompactPortrait -> CompactPortraitPager(
+                            pagerState = pagerState,
+                            p = panel,
+                            ui = ui,
+                            darkMode = darkScreenMode,
+                            onSelectPage = { page -> scope.launch { pagerState.animateScrollToPage(page) } },
+                        )
                         LayoutMode.CompactLandscape -> CompactLandscapePanel(panel, ui, go, performance, setPerformance, openColors, enterMidiLearn)
                         LayoutMode.Medium -> MediumPanel(panel, ui, go)
                         LayoutMode.Expanded -> ExpandedPanel(panel, ui)
@@ -534,7 +571,54 @@ private fun LcdOverlay(ui: UiState, harbor: Harbor) {
 
 // ------------------------------------------------------------------------------ the layouts
 
-/** Phone portrait: the controls re-flowed in the hardware's groups, two-tier keybed (§6.2.1). */
+/** Phone portrait: 4 swipeable layouts (full panel, 8-knob controls without keys, LCD on case, full dark LCD). */
+@Composable
+private fun CompactPortraitPager(
+    pagerState: androidx.compose.foundation.pager.PagerState,
+    p: PanelState,
+    ui: UiState,
+    darkMode: Boolean,
+    onSelectPage: (Int) -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+        ) { page ->
+            when (page) {
+                0 -> CompactPortraitPanel(p, ui)
+                1 -> CompactPortraitControls(p, ui)
+                2 -> CompactPortraitScreen(p, ui)
+                else -> CompactPortraitDarkScreen(p, ui)
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(bottom = 8.dp, top = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            repeat(4) { i ->
+                val active = pagerState.currentPage == i
+                val color = when {
+                    darkMode && active -> Color.White.copy(alpha = 0.85f)
+                    darkMode -> Color.White.copy(alpha = 0.25f)
+                    active -> p.prefs.finish.silk
+                    else -> p.prefs.finish.silkDim.copy(alpha = 0.45f)
+                }
+                Box(
+                    Modifier
+                        .height(6.dp)
+                        .width(if (active) 18.dp else 6.dp)
+                        .clip(CircleShape)
+                        .background(color)
+                        .clickable { onSelectPage(i) },
+                )
+            }
+        }
+    }
+}
+
+/** Phone portrait page 0: the controls re-flowed in the hardware's groups, two-tier or sliding keybed (§6.2.1). */
 @Composable
 private fun CompactPortraitPanel(p: PanelState, ui: UiState) {
     Box(Modifier.fillMaxSize().systemGestureExclusion()) {
@@ -555,6 +639,65 @@ private fun CompactPortraitPanel(p: PanelState, ui: UiState) {
                 ButtonGrid(p, btnH, Modifier.fillMaxWidth(), spacing = 7.dp)
                 KeybedArea(p, Modifier.weight(1f).fillMaxWidth(), portrait = true)
             }
+        }
+    }
+}
+
+/** Phone portrait page 1: larger LCD, all 8 knobs and all buttons (including OCT−/OCT+), no keys. */
+@Composable
+private fun CompactPortraitControls(p: PanelState, ui: UiState) {
+    Box(Modifier.fillMaxSize().systemGestureExclusion()) {
+        BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            val h = maxHeight
+            val knob = if (h > 720.dp) 62.dp else 54.dp
+            val btnH = if (h > 720.dp) 48.dp else 42.dp
+            val octH = 42.dp
+            val controlsH = (knob + 20.dp) * 2 + (btnH * 2 + 20.dp) + octH + 44.dp
+            val lcd = (h - controlsH).coerceIn(170.dp, min(maxWidth - 24.dp, 310.dp))
+            Column(
+                Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
+                LcdScreen(p, ui, lcd)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    MasterPot(p.master, knob, p.prefs, p.input)
+                    Encoder(Fm1Panel.SELECT, knob, p.prefs, p.input, externalClicks = p.leds.encClicks(Fm1Panel.SELECT.id))
+                    Encoder(Fm1Panel.PRESETS, knob, p.prefs, p.input, externalClicks = p.leds.encClicks(Fm1Panel.PRESETS.id))
+                    Encoder(Fm1Panel.ALGORITHM, knob, p.prefs, p.input, externalClicks = p.leds.encClicks(Fm1Panel.ALGORITHM.id))
+                }
+                Knobs(p, knob, Modifier.fillMaxWidth())
+                Box(Modifier.fillMaxWidth().tray(p.prefs.finish).padding(6.dp)) {
+                    ButtonGrid(p, btnH, Modifier.fillMaxWidth(), spacing = 6.dp)
+                }
+                Row(
+                    Modifier.tray(p.prefs.finish).padding(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    for (b in Fm1Panel.OCT) PanelButton(b, p.leds[b.id], 108.dp, octH, p.prefs, p.input)
+                }
+            }
+        }
+    }
+}
+
+/** Phone portrait page 2: enlarged LCD alone on the selected case background. */
+@Composable
+private fun CompactPortraitScreen(p: PanelState, ui: UiState) {
+    BoxWithConstraints(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+        val lcd = min(maxWidth - 8.dp, maxHeight - 16.dp).coerceAtLeast(180.dp)
+        LcdScreen(p, ui, lcd)
+    }
+}
+
+/** Phone portrait page 3: full-screen pure black dark-mode LCD only for external MIDI play. */
+@Composable
+private fun CompactPortraitDarkScreen(p: PanelState, ui: UiState) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+        val lcd = min(maxWidth, maxHeight).coerceAtLeast(180.dp)
+        Box(Modifier.size(lcd)) {
+            LcdView(p.harbor, lcd, p.prefs.smoothLcd)
+            LcdOverlay(ui, p.harbor)
         }
     }
 }
@@ -755,22 +898,80 @@ private fun KeybedArea(p: PanelState, modifier: Modifier, portrait: Boolean) {
     }
 }
 
-/** Eight white keys at a time with edge tabs; a view scroll, not the firmware's OCT (§6.2.1). */
+/** Eight white keys at a time with a draggable full-range overview strip above (§6.2.1). */
 @Composable
 private fun WindowedKeybed(p: PanelState, modifier: Modifier) {
-    val whites = (0 until Fm1Panel.KEY_COUNT).filter { !Fm1Panel.isBlack(it) }
-    var start by remember { mutableIntStateOf(7) } // C4
-    val first = whites.indexOf(start).coerceAtLeast(0)
-    val last = (first + 7).coerceAtMost(whites.lastIndex)
-    val range = whites[first]..whites[last]
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = { start = whites[(first - 1).coerceAtLeast(0)] }, enabled = first > 0) {
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Lower keys")
+    val whites = remember { (0 until Fm1Panel.KEY_COUNT).filter { !Fm1Panel.isBlack(it) } }
+    var first by remember { mutableIntStateOf(whites.indexOf(7).coerceAtLeast(0)) } // C4
+    val maxFirst = (whites.size - 8).coerceAtLeast(0)
+    val clampedFirst = first.coerceIn(0, maxFirst)
+    val last = (clampedFirst + 7).coerceAtMost(whites.lastIndex)
+    val range = whites[clampedFirst]..whites[last]
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        KeybedOverviewSlider(
+            whiteCount = whites.size,
+            windowStart = clampedFirst,
+            windowSize = 8,
+            finish = p.prefs.finish,
+            onMove = { next -> first = next.coerceIn(0, maxFirst) },
+            modifier = Modifier.fillMaxWidth().height(26.dp).padding(horizontal = 4.dp),
+        )
+        Keybed(listOf(range), p.leds, p.prefs, p.input, Modifier.weight(1f).fillMaxWidth())
+    }
+}
+
+@Composable
+private fun KeybedOverviewSlider(
+    whiteCount: Int,
+    windowStart: Int,
+    windowSize: Int,
+    finish: Finish,
+    onMove: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(
+        modifier
+            .pointerInput(whiteCount, windowSize) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    fun pick(x: Float) {
+                        val frac = (x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
+                        val target = (frac * whiteCount - windowSize / 2f).roundToInt()
+                        onMove(target)
+                    }
+                    pick(down.position.x)
+                    while (true) {
+                        val ev = awaitPointerEvent()
+                        val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                        ch.consume()
+                        if (!ch.pressed) break
+                        pick(ch.position.x)
+                    }
+                }
+            },
+    ) {
+        val cellW = size.width / whiteCount
+        for (i in 0 until whiteCount) {
+            val x = i * cellW + 1.dp.toPx()
+            val w = (cellW - 2.dp.toPx()).coerceAtLeast(2f)
+            val inWindow = i in windowStart until (windowStart + windowSize)
+            drawRoundRect(
+                color = if (inWindow) finish.naturalTop.copy(alpha = 0.85f) else finish.naturalTop.copy(alpha = 0.30f),
+                topLeft = Offset(x, 2.dp.toPx()),
+                size = Size(w, size.height - 4.dp.toPx()),
+                cornerRadius = CornerRadius(3.dp.toPx()),
+            )
         }
-        Keybed(listOf(range), p.leds, p.prefs, p.input, Modifier.weight(1f).fillMaxHeight())
-        IconButton(onClick = { start = whites[(first + 1).coerceAtMost(whites.size - 8)] }, enabled = last < whites.lastIndex) {
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Higher keys")
-        }
+        val frameX = windowStart * cellW
+        val frameW = (windowSize * cellW).coerceAtMost(size.width - frameX)
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.92f),
+            topLeft = Offset(frameX, 0.5.dp.toPx()),
+            size = Size(frameW, size.height - 1.dp.toPx()),
+            cornerRadius = CornerRadius(6.dp.toPx()),
+            style = Stroke(1.8.dp.toPx()),
+        )
     }
 }
 

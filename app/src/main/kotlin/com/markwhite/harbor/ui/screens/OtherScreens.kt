@@ -101,6 +101,12 @@ fun ControlsScreen(app: HarborApp, onBack: () -> Unit) {
             SwitchRow("Keys", s.hapticKeys.collectAsState().value, onChange = s::setHapticKeys)
         }
         Section("Display") {
+            Choice(
+                "Portrait layout",
+                listOf(0 to "Full", 1 to "No keys", 2 to "Screen", 3 to "Dark"),
+                s.portraitPage.collectAsState().value,
+                s::setPortraitPage,
+            )
             PanelAppearanceControls(s, showPreview = true)
             SwitchRow("Smooth LCD scaling", s.smoothLcd.collectAsState().value, "Off: pixel-exact", s::setSmoothLcd)
             SwitchRow("Immersive in landscape", s.immersive.collectAsState().value, "Hide the status bar while playing", s::setImmersive)

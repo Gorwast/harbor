@@ -46,6 +46,15 @@ class Settings(context: Context) {
     val keybedMode: StateFlow<KeybedMode> = _keybedMode
     fun setKeybedMode(v: KeybedMode) { prefs.edit { putInt("keybed", v.ordinal) }; _keybedMode.value = v }
 
+    /** Active phone-portrait page: 0 full panel, 1 controls only (no keys), 2 screen on case, 3 dark screen. */
+    private val _portraitPage = flow { prefs.getInt("portraitPage", 0).coerceIn(0, 3) }
+    val portraitPage: StateFlow<Int> = _portraitPage
+    fun setPortraitPage(v: Int) {
+        val clamped = v.coerceIn(0, 3)
+        prefs.edit { putInt("portraitPage", clamped) }
+        _portraitPage.value = clamped
+    }
+
     private val _hapticKnobs = flow { prefs.getBoolean("hapticKnobs", true) }
     val hapticKnobs: StateFlow<Boolean> = _hapticKnobs
     fun setHapticKnobs(v: Boolean) { prefs.edit { putBoolean("hapticKnobs", v) }; _hapticKnobs.value = v }
