@@ -36,6 +36,8 @@ object NativeEngine {
     @JvmStatic external fun midiMap(source: Int, rules: IntArray, knobMode: Int, sensitivity: Int)
     /** Listen for the next CC or Note-On on [source] (-1 cancels). */
     @JvmStatic external fun midiLearnStart(source: Int)
+    /** Suppress synth MIDI dispatch while Play-screen MIDI Learn is active. */
+    @JvmStatic external fun midiLearnMute(mute: Boolean)
     /** [source, kind (0 CC, 1 Note), channel (0..15), number (0..127)], or null. */
     @JvmStatic external fun midiLearnPoll(): IntArray?
     /** Bytes from a source with their `System.nanoTime` timestamp. True: not only real-time bytes. */

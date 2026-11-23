@@ -24,6 +24,13 @@ data class MidiTrigger(
             }
             return if (channel in 0..15) "$base · Ch ${channel + 1}" else base
         }
+
+    /** Compact badge text for the Play-screen MIDI Learn overlay (e.g. `CC21`, `N36`). */
+    val shortLabel: String
+        get() = when (kind) {
+            TriggerKind.Cc -> "CC${number.coerceIn(0, 127)}"
+            TriggerKind.Note -> "N${number.coerceIn(0, 127)}"
+        }
 }
 
 private val NOTE_NAMES = arrayOf("C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B")

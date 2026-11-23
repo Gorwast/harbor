@@ -33,6 +33,7 @@ struct Host {
     pot: u16,
     enc_clicks: [i32; 7],
     learn_source: i32,
+    learn_mute: bool,
     learned: Option<[i32; 4]>,
     requested_lead: usize,
 }
@@ -179,6 +180,7 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_start(
             pot: 512,
             enc_clicks: [0; 7],
             learn_source: -1,
+            learn_mute: false,
             learned: None,
             requested_lead: requested,
         });
@@ -363,6 +365,14 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_midiLearnSt
     }
 }
 
+/// Suppress dispatching incoming MIDI to the synth while Play-screen MIDI Learn is active.
+#[no_mangle]
+pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_midiLearnMute(_env: JNIEnv, _: JClass, mute: jboolean) {
+    if let Some(h) = host().as_mut() {
+        h.learn_mute = mute != 0;
+    }
+}
+
 /// Take the message captured since `midiLearnStart`: `[source, kind, channel, number]`, or null.
 #[no_mangle]
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_midiLearnPoll(env: JNIEnv, _: JClass) -> jintArray {
@@ -404,29 +414,30 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_midiData(
     let now = now_ns();
     let mut h = host();
     let Some(h) = h.as_mut() else { return JNI_FALSE };
-    let Host { engine, parsers, pot, enc_clicks, learn_source, learned, .. } = h;
+    let Host { engine, parsers, pot, enc_clicks, learn_source, learn_mute, learned, .. } = h;
     let parser = parsers.entry(source).or_default();
+    let muted = *learn_mute;
     let mut got_learn = None;
     let active = parser.feed_mapped(
         chunk,
-        &mut |m| engine.midi(m, timestamp.max(0) as u64, now),
+        &mut |m| if !muted { engine.midi(m, timestamp.max(0) as u64, now); },
         &mut |action| match action {
             PanelAction::Enc { enc, clicks } => {
-                engine.send(Cmd::Enc { enc, clicks });
+                if !muted { engine.send(Cmd::Enc { enc, clicks }); }
                 if (enc as usize) < enc_clicks.len() {
                     enc_clicks[enc as usize] = enc_clicks[enc as usize].wrapping_add(clicks);
                 }
             }
             PanelAction::Pot(v) => {
                 *pot = v.min(1023);
-                engine.send(Cmd::Pot(*pot));
+                if !muted { engine.send(Cmd::Pot(*pot)); }
             }
             PanelAction::PotDelta(d) => {
                 *pot = (*pot as i32 + d as i32).clamp(0, 1023) as u16;
-                engine.send(Cmd::Pot(*pot));
+                if !muted { engine.send(Cmd::Pot(*pot)); }
             }
             PanelAction::Key { id, down } => {
-                engine.send(Cmd::Key { id, down });
+                if !muted { engine.send(Cmd::Key { id, down }); }
             }
         },
         &mut got_learn,

@@ -9,8 +9,12 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.dropShadow
@@ -108,6 +112,22 @@ interface PanelInput {
     fun master(value: Int)
 }
 
+/** A mappable front-panel target during Play-screen MIDI Learn. */
+sealed interface LearnTarget {
+    val label: String
+    data class Knob(val knobId: Int, override val label: String) : LearnTarget
+    data class Button(val btnId: Int, override val label: String) : LearnTarget
+}
+
+/** Active Play-screen MIDI Learn overlay state; null during normal play. */
+data class MidiLearnOverlayState(
+    val armed: LearnTarget?,
+    val bindingOf: (LearnTarget) -> String?,
+    val onSelect: (LearnTarget) -> Unit,
+)
+
+val LocalMidiLearn = compositionLocalOf<MidiLearnOverlayState?> { null }
+
 private class Haptics(private val view: View) {
     private var last = 0L
     fun tick() {
@@ -155,6 +175,9 @@ fun Encoder(
         glow = true
     }
     val p by rememberUpdatedState(prefs)
+    val learn = LocalMidiLearn.current
+    val learnState by rememberUpdatedState(learn)
+    val learnTarget = remember(enc.id, enc.label) { LearnTarget.Knob(enc.id, enc.label) }
     fun turn(clicks: Int) {
         if (clicks == 0) return
         input.enc(enc.id, clicks)
@@ -164,75 +187,97 @@ fun Encoder(
         if (p.hapticKnobs) haptics.tick()
     }
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Canvas(
-            Modifier
-                .size(size)
-                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
-                .semantics {
-                    contentDescription = "${enc.label} encoder"
-                    stateDescription = "Value shown on the firmware screen"
-                    customActions = listOf(
-                        CustomAccessibilityAction("Turn right") { turn(1); true },
-                        CustomAccessibilityAction("Turn left") { turn(-1); true },
-                        CustomAccessibilityAction("Turn right 5") { turn(5); true },
-                        CustomAccessibilityAction("Turn left 5") { turn(-5); true },
-                    )
-                }
-                .pointerInput(enc.id, pxPerDetent) {
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        down.consume()
-                        val t0 = down.uptimeMillis
-                        val c = Offset(this.size.width / 2f, this.size.height / 2f)
-                        var acc = 0f
-                        var travel = 0f
-                        var circular: Boolean? = initialCircularMode(p.knobGesture)
-                        var lastAngle = atan2(down.position.y - c.y, down.position.x - c.x)
-                        var angleAcc = 0f
-                        var up = down
-                        while (true) {
-                            val ev = awaitPointerEvent()
-                            val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
-                            up = ch
-                            if (!ch.pressed) break
-                            val d = ch.positionChange()
-                            ch.consume()
-                            travel += abs(d.x) + abs(d.y)
-                            if (circular == null && travel > 16.dp.toPx()) {
-                                // tangential motion decides: circular; mostly linear: drag
-                                circular = isCircularMotion(c, ch.position, d)
-                            }
-                            if (circular == true) {
-                                val (deg, nextAngle) = angleDeltaDeg(c, ch.position, lastAngle)
-                                lastAngle = nextAngle
-                                angleAcc += deg
-                                val n = (angleAcc / 15f).toInt()
-                                if (n != 0) { angleAcc -= n * 15f; turn(n) }
-                            } else if (travel > slop) {
-                                acc += linearKnobDelta(p.knobGesture, d)
-                                val n = (acc / pxPerDetent).toInt()
-                                if (n != 0) { acc -= n * pxPerDetent; turn(n) }
-                            }
-                        }
-                        // a tap: one precise step (top/right half +1, bottom/left -1)
-                        if (p.tapToStep && travel <= slop && up.uptimeMillis - t0 < 250) {
-                            val r = down.position - c
-                            turn(if (r.x - r.y > 0) 1 else -1)
-                        }
+        Box(contentAlignment = Alignment.Center) {
+            Canvas(
+                Modifier
+                    .size(size)
+                    .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                    .semantics {
+                        contentDescription = "${enc.label} encoder"
+                        stateDescription = "Value shown on the firmware screen"
+                        customActions = listOf(
+                            CustomAccessibilityAction("Turn right") { turn(1); true },
+                            CustomAccessibilityAction("Turn left") { turn(-1); true },
+                            CustomAccessibilityAction("Turn right 5") { turn(5); true },
+                            CustomAccessibilityAction("Turn left 5") { turn(-5); true },
+                        )
                     }
-                },
-        ) {
-            val f = p.finish
-            val big = this.size.minDimension / 2f
-            val tint = if (accent) f.accent else f.silkDim
-            if (glow) bloom(center, big * 1.1f, f.accent, 0.22f)
-            ticks(center, big, tint.copy(alpha = if (glow) 1f else if (accent) 0.6f else 0.55f))
-            knob(
-                f, center, big * 0.8f, angle,
-                if (accent) f.accent else f.pointer,
-                glowing = accent || glow,
-                customColor = p.knobColors["enc${enc.id}"],
-            )
+                    .pointerInput(enc.id, pxPerDetent) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            down.consume()
+                            learnState?.let { activeLearn ->
+                                while (true) {
+                                    val ev = awaitPointerEvent()
+                                    val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                    ch.consume()
+                                    if (!ch.pressed) {
+                                        activeLearn.onSelect(learnTarget)
+                                        break
+                                    }
+                                }
+                                return@awaitEachGesture
+                            }
+                            val t0 = down.uptimeMillis
+                            val c = Offset(this.size.width / 2f, this.size.height / 2f)
+                            var acc = 0f
+                            var travel = 0f
+                            var circular: Boolean? = initialCircularMode(p.knobGesture)
+                            var lastAngle = atan2(down.position.y - c.y, down.position.x - c.x)
+                            var angleAcc = 0f
+                            var up = down
+                            while (true) {
+                                val ev = awaitPointerEvent()
+                                val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                up = ch
+                                if (!ch.pressed) break
+                                val d = ch.positionChange()
+                                ch.consume()
+                                travel += abs(d.x) + abs(d.y)
+                                if (circular == null && travel > 16.dp.toPx()) {
+                                    // tangential motion decides: circular; mostly linear: drag
+                                    circular = isCircularMotion(c, ch.position, d)
+                                }
+                                if (circular == true) {
+                                    val (deg, nextAngle) = angleDeltaDeg(c, ch.position, lastAngle)
+                                    lastAngle = nextAngle
+                                    angleAcc += deg
+                                    val n = (angleAcc / 15f).toInt()
+                                    if (n != 0) { angleAcc -= n * 15f; turn(n) }
+                                } else if (travel > slop) {
+                                    acc += linearKnobDelta(p.knobGesture, d)
+                                    val n = (acc / pxPerDetent).toInt()
+                                    if (n != 0) { acc -= n * pxPerDetent; turn(n) }
+                                }
+                            }
+                            // a tap: one precise step (top/right half +1, bottom/left -1)
+                            if (p.tapToStep && travel <= slop && up.uptimeMillis - t0 < 250) {
+                                val r = down.position - c
+                                turn(if (r.x - r.y > 0) 1 else -1)
+                            }
+                        }
+                    },
+            ) {
+                val f = p.finish
+                val big = this.size.minDimension / 2f
+                val tint = if (accent) f.accent else f.silkDim
+                if (glow) bloom(center, big * 1.1f, f.accent, 0.22f)
+                ticks(center, big, tint.copy(alpha = if (glow) 1f else if (accent) 0.6f else 0.55f))
+                knob(
+                    f, center, big * 0.8f, angle,
+                    if (accent) f.accent else f.pointer,
+                    glowing = accent || glow,
+                    customColor = p.knobColors["enc${enc.id}"],
+                )
+            }
+            if (learn != null) {
+                LearnRingAndBadge(
+                    armed = learn.armed == learnTarget,
+                    badge = learn.bindingOf(learnTarget),
+                    modifier = Modifier.matchParentSize(),
+                    circle = true,
+                )
+            }
         }
         if (showLabel) Text(enc.short, style = Silk.copy(color = prefs.finish.silk), maxLines = 1)
     }
@@ -247,6 +292,9 @@ fun MasterPot(value: Int, size: Dp, prefs: PanelPrefs, input: PanelInput, modifi
     val fullTravel = with(LocalDensity.current) { 200.dp.toPx() }
     val v by rememberUpdatedState(value)
     val p by rememberUpdatedState(prefs)
+    val learn = LocalMidiLearn.current
+    val learnState by rememberUpdatedState(learn)
+    val learnTarget = remember { LearnTarget.Knob(7, "MASTER") }
     var dragging by remember { mutableStateOf(false) }
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Box(contentAlignment = Alignment.Center) {
@@ -264,6 +312,18 @@ fun MasterPot(value: Int, size: Dp, prefs: PanelPrefs, input: PanelInput, modifi
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             down.consume()
+                            learnState?.let { activeLearn ->
+                                while (true) {
+                                    val ev = awaitPointerEvent()
+                                    val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                    ch.consume()
+                                    if (!ch.pressed) {
+                                        activeLearn.onSelect(learnTarget)
+                                        break
+                                    }
+                                }
+                                return@awaitEachGesture
+                            }
                             dragging = true
                             val c = Offset(this.size.width / 2f, this.size.height / 2f)
                             var acc = v.toFloat()
@@ -310,6 +370,14 @@ fun MasterPot(value: Int, size: Dp, prefs: PanelPrefs, input: PanelInput, modifi
                 knob(f, center, big * 0.74f, -135f + 270f * t, f.pointer, glowing = false, customColor = p.knobColors["master"])
             }
             if (dragging) Text("${value * 100 / 1023}%", style = Silk.copy(fontSize = 11.sp, color = LedAmberHot))
+            if (learn != null) {
+                LearnRingAndBadge(
+                    armed = learn.armed == learnTarget,
+                    badge = learn.bindingOf(learnTarget),
+                    modifier = Modifier.matchParentSize(),
+                    circle = true,
+                )
+            }
         }
         if (showLabel) Text("MASTER", style = Silk.copy(color = prefs.finish.silk), maxLines = 1)
     }
@@ -322,6 +390,9 @@ fun PanelButton(btn: Fm1Panel.Btn, led: Float, width: Dp, height: Dp, prefs: Pan
     var down by remember { mutableStateOf(false) }
     var latched by remember { mutableStateOf(false) }
     val p by rememberUpdatedState(prefs)
+    val learn = LocalMidiLearn.current
+    val learnState by rememberUpdatedState(learn)
+    val learnTarget = remember(btn.id, btn.label) { LearnTarget.Button(btn.id, btn.label) }
     fun press(d: Boolean) {
         if (d == down) return
         down = d
@@ -348,6 +419,18 @@ fun PanelButton(btn: Fm1Panel.Btn, led: Float, width: Dp, height: Dp, prefs: Pan
                 awaitEachGesture {
                     val first = awaitFirstDown(requireUnconsumed = false)
                     first.consume()
+                    learnState?.let { activeLearn ->
+                        while (true) {
+                            val ev = awaitPointerEvent()
+                            val ch = ev.changes.firstOrNull { it.id == first.id } ?: break
+                            ch.consume()
+                            if (!ch.pressed) {
+                                activeLearn.onSelect(learnTarget)
+                                break
+                            }
+                        }
+                        return@awaitEachGesture
+                    }
                     if (p.holdAssist) {
                         latched = !latched
                         press(latched)
@@ -405,6 +488,14 @@ fun PanelButton(btn: Fm1Panel.Btn, led: Float, width: Dp, height: Dp, prefs: Pan
         ) {
             if (icon != null && height >= 44.dp) Icon(icon, null, Modifier.size(17.dp), tint = ink.copy(alpha = if (lit) 1f else 0.85f))
             Text(btn.label.replace("−", " −").replace("+", " +"), style = Silk.copy(fontSize = 11.sp, color = ink), maxLines = 1)
+        }
+        if (learn != null) {
+            LearnRingAndBadge(
+                armed = learn.armed == learnTarget,
+                badge = learn.bindingOf(learnTarget),
+                modifier = Modifier.matchParentSize(),
+                circle = false,
+            )
         }
     }
 }
@@ -614,4 +705,32 @@ internal fun angleDeltaDeg(center: Offset, pos: Offset, lastAngle: Float): Pair<
 internal fun linearKnobDelta(gesture: KnobGesture, delta: Offset): Float = when (gesture) {
     KnobGesture.Horizontal -> delta.x // right is clockwise
     else -> -delta.y // up is clockwise
+}
+
+@Composable
+private fun LearnRingAndBadge(armed: Boolean, badge: String?, modifier: Modifier = Modifier, circle: Boolean) {
+    val shape = if (circle) CircleShape else RoundedCornerShape(9.dp)
+    Box(
+        modifier
+            .border(if (armed) 2.5.dp else 1.dp, if (armed) Tokens.amber else Color.White.copy(alpha = 0.25f), shape)
+            .then(if (armed) Modifier.background(Tokens.amber.copy(alpha = 0.14f), shape) else Modifier),
+    ) {
+        if (badge != null || armed) {
+            Text(
+                text = if (armed) "…" else badge!!,
+                style = Silk.copy(
+                    fontSize = 8.5.sp,
+                    color = if (armed) Tokens.amberHi else Color(0xFFF4F1EA),
+                ),
+                maxLines = 1,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 1.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (armed) Color(0xE63A2408) else Color(0xD9141518))
+                    .border(0.75.dp, if (armed) Tokens.amber else Color(0x66FFFFFF), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 4.dp, vertical = 1.dp),
+            )
+        }
+    }
 }

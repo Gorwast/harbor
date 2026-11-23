@@ -32,6 +32,8 @@ import com.markwhite.harbor.engine.Phase
 import com.markwhite.harbor.engine.SaveState
 import com.markwhite.harbor.midi.HarborMidiService
 import com.markwhite.harbor.ui.panel.PanelPrefs
+import com.markwhite.harbor.ui.panel.withButtonsColor
+import com.markwhite.harbor.ui.panel.withCaseColor
 import com.markwhite.harbor.ui.panel.withKeysColor
 import com.markwhite.harbor.ui.screens.AboutScreen
 import com.markwhite.harbor.ui.screens.AudioScreen
@@ -113,6 +115,8 @@ fun HarborRoot(app: HarborApp, pending: PendingOpen?, onPendingHandled: () -> Un
         usbHint, buffer, recording != null, ::go)
 
     val finishId by s.finish.collectAsState()
+    val caseColorArgb by s.caseColor.collectAsState()
+    val buttonsColorArgb by s.buttonsColor.collectAsState()
     val keysColorArgb by s.keysColor.collectAsState()
     val knobColorsArgb by s.knobColors.collectAsState()
     val prefs = PanelPrefs(
@@ -127,6 +131,8 @@ fun HarborRoot(app: HarborApp, pending: PendingOpen?, onPendingHandled: () -> Un
         smoothLcd = s.smoothLcd.collectAsState().value,
         flat = s.flatPanel.collectAsState().value,
         finish = com.markwhite.harbor.ui.panel.finishOf(finishId)
+            .withCaseColor(caseColorArgb?.let { androidx.compose.ui.graphics.Color(it) })
+            .withButtonsColor(buttonsColorArgb?.let { androidx.compose.ui.graphics.Color(it) })
             .withKeysColor(keysColorArgb?.let { androidx.compose.ui.graphics.Color(it) }),
         knobColors = knobColorsArgb.mapValues { androidx.compose.ui.graphics.Color(it.value) },
     )

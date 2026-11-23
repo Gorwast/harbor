@@ -85,6 +85,22 @@ class Settings(context: Context) {
     val finish: StateFlow<String> = _finish
     fun setFinish(v: String) { prefs.edit { putString("finish", v) }; _finish.value = v }
 
+    /** Optional ARGB override for the panel case colour; null uses the preset's case. */
+    private val _caseColor = flow { if (prefs.contains("caseColor")) prefs.getInt("caseColor", 0) else null }
+    val caseColor: StateFlow<Int?> = _caseColor
+    fun setCaseColor(argb: Int?) {
+        prefs.edit { if (argb == null) remove("caseColor") else putInt("caseColor", argb) }
+        _caseColor.value = argb
+    }
+
+    /** Optional ARGB override for the panel buttons colour; null uses the preset's buttons. */
+    private val _buttonsColor = flow { if (prefs.contains("buttonsColor")) prefs.getInt("buttonsColor", 0) else null }
+    val buttonsColor: StateFlow<Int?> = _buttonsColor
+    fun setButtonsColor(argb: Int?) {
+        prefs.edit { if (argb == null) remove("buttonsColor") else putInt("buttonsColor", argb) }
+        _buttonsColor.value = argb
+    }
+
     /** Optional ARGB override for the keybed's general colour; null uses the preset's keys. */
     private val _keysColor = flow { if (prefs.contains("keysColor")) prefs.getInt("keysColor", 0) else null }
     val keysColor: StateFlow<Int?> = _keysColor

@@ -1,8 +1,20 @@
 package com.markwhite.harbor.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import com.markwhite.harbor.HarborApp
+import com.markwhite.harbor.midi.KnobBinding
+import com.markwhite.harbor.midi.MidiSource
+import com.markwhite.harbor.midi.TriggerKind
+import com.markwhite.harbor.ui.panel.LearnTarget
+import com.markwhite.harbor.ui.panel.LocalMidiLearn
+import com.markwhite.harbor.ui.panel.MidiLearnOverlayState
+import com.markwhite.harbor.ui.screens.PanelAppearanceControls
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.RowScope
@@ -49,16 +61,19 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -140,26 +155,114 @@ fun FirmwareTitle(ui: UiState, go: (Screen) -> Unit, modifier: Modifier = Modifi
 }
 
 @Composable
-fun OverflowMenu(go: (Screen) -> Unit, onPerformanceMode: (() -> Unit)?) {
+fun OverflowMenu(
+    go: (Screen) -> Unit,
+    onPerformanceMode: (() -> Unit)?,
+    onPanelColors: (() -> Unit)? = null,
+    onMidiLearn: (() -> Unit)? = null,
+) {
     var open by remember { mutableStateOf(false) }
     Box {
         IconButton(onClick = { open = true }) { Icon(Icons.Filled.MoreVert, "More") }
         DropdownMenu(
             expanded = open, onDismissRequest = { open = false }, shape = RoundedCornerShape(16.dp), containerColor = Color(0xFF232427),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Tokens.line.copy(alpha = 0.7f)),
+            border = BorderStroke(1.dp, Tokens.line.copy(alpha = 0.7f)),
         ) {
-            for ((label, s) in listOf("Library" to Screen.Library, "Saves & backup" to Screen.Saves, "MIDI" to Screen.Midi,
-                "Audio & performance" to Screen.Audio, "Controls & display" to Screen.Controls, "Help" to Screen.Help, "About" to Screen.About)) {
+            for ((label, s) in listOf("Library" to Screen.Library, "Saves & backup" to Screen.Saves)) {
                 DropdownMenuItem(text = { Text(label) }, onClick = { open = false; go(s) })
             }
+            if (onPanelColors != null) DropdownMenuItem(text = { Text("Panel colours…") }, onClick = { open = false; onPanelColors() })
+            if (onMidiLearn != null) DropdownMenuItem(text = { Text("MIDI learn") }, onClick = { open = false; onMidiLearn() })
             if (onPerformanceMode != null) DropdownMenuItem(text = { Text("Performance mode") }, onClick = { open = false; onPerformanceMode() })
+            DropdownMenuItem(text = { Text("Settings") }, onClick = { open = false; go(Screen.Settings) })
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayScreen(ui: UiState, panel: PanelState, mode: LayoutMode, go: (Screen) -> Unit, performance: Boolean, setPerformance: (Boolean) -> Unit) {
     val compact = mode == LayoutMode.CompactPortrait || mode == LayoutMode.CompactLandscape
+    val app = LocalContext.current.applicationContext as HarborApp
+    val sources by app.midi.sources.collectAsState()
+    val connectedSources = remember(sources) { sources.filter { it.enabled && it.connected } }
+
+    var showColorsSheet by remember { mutableStateOf(false) }
+    var midiLearnActive by remember { mutableStateOf(false) }
+    var selectedSourceKey by remember { mutableStateOf<String?>(null) }
+    var armedTarget by remember { mutableStateOf<LearnTarget?>(null) }
+    val activeSource = connectedSources.firstOrNull { it.key == selectedSourceKey } ?: connectedSources.firstOrNull()
+
+    DisposableEffect(Unit) {
+        onDispose {
+            app.midi.stopLearn()
+            app.midi.setLearnMute(false)
+        }
+    }
+
+    LaunchedEffect(midiLearnActive) {
+        app.midi.setLearnMute(midiLearnActive)
+    }
+
+    LaunchedEffect(midiLearnActive, activeSource?.id, armedTarget) {
+        val src = activeSource
+        val target = armedTarget
+        if (!midiLearnActive || src == null || target == null) {
+            app.midi.stopLearn()
+            return@LaunchedEffect
+        }
+        app.midi.startLearn(src.id)
+        try {
+            while (isActive) {
+                val trigger = app.midi.pollLearn()
+                if (trigger != null) {
+                    val valid = when (target) {
+                        is LearnTarget.Knob -> trigger.kind == TriggerKind.Cc
+                        is LearnTarget.Button -> true
+                    }
+                    if (valid) {
+                        val cleaned = src.mapping.withoutTrigger(trigger)
+                        val next = when (target) {
+                            is LearnTarget.Knob -> {
+                                val prev = cleaned.knobs[target.knobId] ?: KnobBinding()
+                                cleaned.copy(knobs = cleaned.knobs + (target.knobId to prev.copy(cc = trigger)))
+                            }
+                            is LearnTarget.Button -> cleaned.copy(buttons = cleaned.buttons + (target.btnId to trigger))
+                        }
+                        app.midi.setMapping(src, next)
+                        armedTarget = null
+                        break
+                    }
+                }
+                delay(60)
+            }
+        } finally {
+            app.midi.stopLearn()
+        }
+    }
+
+    val learnOverlay = if (midiLearnActive) {
+        MidiLearnOverlayState(
+            armed = armedTarget,
+            bindingOf = { target ->
+                val m = activeSource?.mapping
+                when (target) {
+                    is LearnTarget.Knob -> m?.knobs?.get(target.knobId)?.cc?.shortLabel
+                    is LearnTarget.Button -> m?.buttons?.get(target.btnId)?.shortLabel
+                }
+            },
+            onSelect = { target ->
+                armedTarget = if (armedTarget == target) null else target
+            },
+        )
+    } else null
+
+    val enterMidiLearn = {
+        midiLearnActive = !midiLearnActive
+        armedTarget = null
+    }
+    val openColors = { showColorsSheet = true }
+
     // the case on a cached layer of its own, behind everything (as a parent's background it would
     // be redrawn with every frame of the LCD)
     Box(Modifier.fillMaxSize()) {
@@ -170,7 +273,7 @@ fun PlayScreen(ui: UiState, panel: PanelState, mode: LayoutMode, go: (Screen) ->
                     FirmwareTitle(ui, go, Modifier.weight(1f))
                     Rec(ui, panel.harbor)
                     StatusChipsCompact(ui, go)
-                    OverflowMenu(go) { setPerformance(true) }
+                    OverflowMenu(go, { setPerformance(true) }, openColors, enterMidiLearn)
                 }
             }
             if ((mode == LayoutMode.Medium || mode == LayoutMode.Expanded) && !performance) {
@@ -179,23 +282,69 @@ fun PlayScreen(ui: UiState, panel: PanelState, mode: LayoutMode, go: (Screen) ->
                     Rec(ui, panel.harbor)
                     Spacer(Modifier.width(6.dp))
                     StatusChips(ui, go)
-                    OverflowMenu(go) { setPerformance(true) }
+                    OverflowMenu(go, { setPerformance(true) }, openColors, enterMidiLearn)
                 }
             }
+            CompositionLocalProvider(LocalMidiLearn provides learnOverlay) {
                 Box(Modifier.weight(1f).fillMaxWidth()) {
-                when (mode) {
-                    LayoutMode.CompactPortrait -> CompactPortraitPanel(panel, ui)
-                    LayoutMode.CompactLandscape -> CompactLandscapePanel(panel, ui, go, performance, setPerformance)
-                    LayoutMode.Medium -> MediumPanel(panel, ui, go)
-                    LayoutMode.Expanded -> ExpandedPanel(panel, ui)
+                    when (mode) {
+                        LayoutMode.CompactPortrait -> CompactPortraitPanel(panel, ui)
+                        LayoutMode.CompactLandscape -> CompactLandscapePanel(panel, ui, go, performance, setPerformance, openColors, enterMidiLearn)
+                        LayoutMode.Medium -> MediumPanel(panel, ui, go)
+                        LayoutMode.Expanded -> ExpandedPanel(panel, ui)
+                    }
+                    // over the panel, not above it: the panel keeps its size when it comes and goes
+                    if (midiLearnActive) {
+                        MidiLearnBanner(
+                            connectedSources = connectedSources,
+                            activeSource = activeSource,
+                            armedTarget = armedTarget,
+                            onSelectSource = { selectedSourceKey = it.key },
+                            onClearArmed = {
+                                val src = activeSource ?: return@MidiLearnBanner
+                                val target = armedTarget ?: return@MidiLearnBanner
+                                val next = when (target) {
+                                    is LearnTarget.Knob -> {
+                                        val prev = src.mapping.knobs[target.knobId] ?: KnobBinding()
+                                        val updated = prev.copy(cc = null)
+                                        if (updated.isEmpty) src.mapping.copy(knobs = src.mapping.knobs - target.knobId)
+                                        else src.mapping.copy(knobs = src.mapping.knobs + (target.knobId to updated))
+                                    }
+                                    is LearnTarget.Button -> src.mapping.copy(buttons = src.mapping.buttons - target.btnId)
+                                }
+                                app.midi.setMapping(src, next)
+                            },
+                            onDone = { midiLearnActive = false; armedTarget = null },
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 10.dp, vertical = 8.dp),
+                        )
+                    } else if (!performance) {
+                        PerfBanner(ui, panel.harbor, go, Modifier.align(Alignment.TopCenter).padding(horizontal = 10.dp, vertical = 6.dp))
+                    }
+                    if (performance && mode != LayoutMode.CompactLandscape) {
+                        TextButton(onClick = { setPerformance(false) }, Modifier.align(Alignment.TopEnd)) { Text("Exit performance mode") }
+                    }
+                    // performance mode has no bar: a take still running can be seen and stopped
+                    if (performance && ui.recording) Box(Modifier.align(Alignment.TopStart).padding(8.dp)) { Rec(ui, panel.harbor) }
                 }
-                // over the panel, not above it: the panel keeps its size when it comes and goes
-            if (!performance) PerfBanner(ui, panel.harbor, go, Modifier.align(Alignment.TopCenter).padding(horizontal = 10.dp, vertical = 6.dp))
-            if (performance && mode != LayoutMode.CompactLandscape) {
-                    TextButton(onClick = { setPerformance(false) }, Modifier.align(Alignment.TopEnd)) { Text("Exit performance mode") }
+            }
+        }
+    }
+
+    if (showColorsSheet) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(onDismissRequest = { showColorsSheet = false }, sheetState = sheetState) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 20.dp, end = 20.dp, bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Panel colours", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { showColorsSheet = false }) { Text("Done") }
                 }
-                // performance mode has no bar: a take still running can be seen and stopped
-                if (performance && ui.recording) Box(Modifier.align(Alignment.TopStart).padding(8.dp)) { Rec(ui, panel.harbor) }
+                PanelAppearanceControls(app.settings, showPreview = false)
             }
         }
     }
@@ -412,7 +561,15 @@ private fun CompactPortraitPanel(p: PanelState, ui: UiState) {
 
 /** Phone landscape: the hardware's arrangement in one band over a full-width keybed (§6.2.2). */
 @Composable
-private fun CompactLandscapePanel(p: PanelState, ui: UiState, go: (Screen) -> Unit, performance: Boolean, setPerformance: (Boolean) -> Unit) {
+private fun CompactLandscapePanel(
+    p: PanelState,
+    ui: UiState,
+    go: (Screen) -> Unit,
+    performance: Boolean,
+    setPerformance: (Boolean) -> Unit,
+    onPanelColors: () -> Unit,
+    onMidiLearn: () -> Unit,
+) {
     Box(Modifier.fillMaxSize().systemGestureExclusion()) {
         BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 6.dp)) {
             val keysH = max(150.dp, maxHeight * 0.42f)
@@ -448,7 +605,7 @@ private fun CompactLandscapePanel(p: PanelState, ui: UiState, go: (Screen) -> Un
                             if (!ui.recording) CompactClockLabel(ui.statusFlow) { go(Screen.Audio) }
                             Spacer(Modifier.weight(1f))
                             Rec(ui, p.harbor)
-                            OverflowMenu(go) { setPerformance(true) }
+                            OverflowMenu(go, { setPerformance(true) }, onPanelColors, onMidiLearn)
                         }
                     }
                 }
@@ -679,4 +836,71 @@ fun saveText(s: SaveState): String = when (s) {
     SaveState.Saving -> "Saving…"
     is SaveState.Failed -> "⚠ Save failed: ${s.message}. Your changes are kept in memory. Export a copy now."
     SaveState.NotSaved -> "Not saved yet: nothing written to flash"
+}
+
+@Composable
+private fun MidiLearnBanner(
+    connectedSources: List<MidiSource>,
+    activeSource: MidiSource?,
+    armedTarget: LearnTarget?,
+    onSelectSource: (MidiSource) -> Unit,
+    onClearArmed: () -> Unit,
+    onDone: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var deviceMenu by remember { mutableStateOf(false) }
+    val hasBinding = when (armedTarget) {
+        is LearnTarget.Knob -> activeSource?.mapping?.knobs?.get(armedTarget.knobId)?.cc != null
+        is LearnTarget.Button -> activeSource?.mapping?.buttons?.get(armedTarget.btnId) != null
+        null -> false
+    }
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = Color(0xF0202124),
+        border = BorderStroke(1.dp, Tokens.amber),
+        shadowElevation = 6.dp,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    when {
+                        activeSource == null -> "Connect a MIDI controller to link controls"
+                        armedTarget != null -> "Listening for ${armedTarget.label} — move control on ${activeSource.name}"
+                        else -> "MIDI Learn · Tap any knob or button to link"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Tokens.amberHi,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (connectedSources.size > 1 && activeSource != null) {
+                    Box {
+                        Text(
+                            "Device: ${activeSource.name} ▾",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Tokens.dim,
+                            modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { deviceMenu = true }.padding(vertical = 2.dp),
+                        )
+                        DropdownMenu(expanded = deviceMenu, onDismissRequest = { deviceMenu = false }) {
+                            for (src in connectedSources) {
+                                DropdownMenuItem(
+                                    text = { Text(src.name) },
+                                    onClick = { deviceMenu = false; onSelectSource(src) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            if (hasBinding) {
+                TextButton(onClick = onClearArmed) { Text("Clear") }
+            }
+            FilledTonalButton(onClick = onDone) { Text("Done") }
+        }
+    }
 }

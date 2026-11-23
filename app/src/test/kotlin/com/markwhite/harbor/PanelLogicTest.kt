@@ -7,6 +7,8 @@ import com.markwhite.harbor.data.Catalog
 import com.markwhite.harbor.data.FirmwareNotes
 import com.markwhite.harbor.data.KnobGesture
 import com.markwhite.harbor.engine.EngineStatus
+import com.markwhite.harbor.midi.MidiTrigger
+import com.markwhite.harbor.midi.TriggerKind
 import com.markwhite.harbor.ui.LayoutMode
 import com.markwhite.harbor.ui.PerfWatch
 import com.markwhite.harbor.ui.layoutModeOf
@@ -22,6 +24,8 @@ import com.markwhite.harbor.ui.panel.initialCircularMode
 import com.markwhite.harbor.ui.panel.isCircularMotion
 import com.markwhite.harbor.ui.panel.knobShade
 import com.markwhite.harbor.ui.panel.linearKnobDelta
+import com.markwhite.harbor.ui.panel.withButtonsColor
+import com.markwhite.harbor.ui.panel.withCaseColor
 import com.markwhite.harbor.ui.panel.withKeysColor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -163,5 +167,16 @@ class PanelLogicTest {
         val (_, _, lightPtr) = knobShade(Dark, Color(0xFF101010))
         val (_, _, darkPtr) = knobShade(Dark, Color(0xFFF0F0F0))
         assertTrue(lightPtr != darkPtr)
+
+        val lightCase = Dark.withCaseColor(Color(0xFFF2EFE9))
+        val darkCase = Dark.withCaseColor(Color(0xFF18191C))
+        assertTrue(lightCase.silk != darkCase.silk)
+
+        val lightBtns = Dark.withButtonsColor(Color(0xFFF2EFE9))
+        val darkBtns = Dark.withButtonsColor(Color(0xFF18191C))
+        assertTrue(lightBtns.capInk != darkBtns.capInk)
+
+        assertEquals("CC21", MidiTrigger(TriggerKind.Cc, 21).shortLabel)
+        assertEquals("N36", MidiTrigger(TriggerKind.Note, 36, channel = 0).shortLabel)
     }
 }

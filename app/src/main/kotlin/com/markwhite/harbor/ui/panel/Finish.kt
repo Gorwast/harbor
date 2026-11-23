@@ -173,6 +173,33 @@ fun finishOf(id: String): Finish = when (id) {
     else -> Dark
 }
 
+/** Derives case shades and legible silkscreen ink when the user picks a custom case colour. */
+fun Finish.withCaseColor(color: Color?): Finish {
+    if (color == null) return this
+    val light = color.luminance() > 0.35f
+    val silkInk = if (light) Color(0xFF28292D) else Color(0xFFE5E2DA)
+    val silkDimInk = if (light) Color(0xFF6B6A66) else Color(0xFF8C8E93)
+    return copy(
+        bodyTop = lerp(color, Color.White, 0.06f),
+        bodyBot = lerp(color, Color.Black, 0.16f),
+        bodyEdge = if (light) Color(0x99FFFFFF) else Color(0x38FFFFFF),
+        silk = silkInk,
+        silkDim = silkDimInk,
+    )
+}
+
+/** Derives button cap shades and legible cap ink when the user picks a custom buttons colour. */
+fun Finish.withButtonsColor(color: Color?): Finish {
+    if (color == null) return this
+    val ink = if (color.luminance() > 0.35f) Color(0xFF1A1B1E) else Color(0xFFF0EFEC)
+    return copy(
+        capTop = lerp(color, Color.White, 0.05f),
+        capBot = lerp(color, Color.Black, 0.18f),
+        capRim = lerp(color, Color.White, 0.18f),
+        capInk = ink,
+    )
+}
+
 /** Derives keybed & tray shades when the user picks a custom general colour for the keys. */
 fun Finish.withKeysColor(color: Color?): Finish {
     if (color == null) return this

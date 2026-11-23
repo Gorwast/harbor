@@ -202,6 +202,7 @@ class MidiHub(private val context: Context, private val settings: Settings) {
 
     fun startLearn(sourceId: Int) = NativeEngine.midiLearnStart(sourceId)
     fun stopLearn() = NativeEngine.midiLearnStart(-1)
+    fun setLearnMute(mute: Boolean) = NativeEngine.midiLearnMute(mute)
 
     /** Poll for a learned message: Note bindings keep their learned channel; CC bindings match any channel by default. */
     fun pollLearn(): MidiTrigger? {
