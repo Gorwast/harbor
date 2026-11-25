@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.unit.DpOffset
@@ -598,6 +599,11 @@ private fun DrawScope.ticks(c: Offset, big: Float, color: Color, count: Int = 11
  * A knob from above, lit from over the top edge: its shadow, a knurled skirt that turns with it,
  * a glossy face whose highlight doesn't, and the pointer ([angle] degrees, 0 up, clockwise).
  */
+private val KNURL_UNIT = Array(44) { i ->
+    val a = Math.toRadians(i * 360.0 / 44)
+    sin(a).toFloat() to cos(a).toFloat()
+}
+
 private fun DrawScope.knob(
     f: Finish,
     c: Offset,
@@ -611,14 +617,16 @@ private fun DrawScope.knob(
     val effectivePointer = if (customColor != null && !glowing && pointer == f.pointer) resolvedPointer else pointer
     softShadow(Offset(c.x, c.y + r * 0.16f), r * 0.98f, r * 0.22f, Color.Black.copy(alpha = 0.75f))
     drawCircle(Brush.verticalGradient(listOf(knobHi, knobLo), startY = c.y - r, endY = c.y + r), r, c)
-    val knurls = 44
-    for (i in 0 until knurls) {
-        val a = Math.toRadians(i * 360.0 / knurls + angle)
-        val s = sin(a).toFloat()
-        val co = cos(a).toFloat()
-        val facing = 0.5f + 0.5f * co // ridges facing the light catch it
-        drawLine(Color.White.copy(alpha = 0.02f + 0.10f * facing), Offset(c.x + s * r * 0.87f, c.y - co * r * 0.87f),
-            Offset(c.x + s * r * 0.985f, c.y - co * r * 0.985f), strokeWidth = r * 0.035f)
+    rotate(angle, pivot = c) {
+        for ((s, co) in KNURL_UNIT) {
+            val facing = 0.5f + 0.5f * co // ridges facing the light catch it
+            drawLine(
+                Color.White.copy(alpha = 0.02f + 0.10f * facing),
+                Offset(c.x + s * r * 0.87f, c.y - co * r * 0.87f),
+                Offset(c.x + s * r * 0.985f, c.y - co * r * 0.985f),
+                strokeWidth = r * 0.035f,
+            )
+        }
     }
     val face = r * 0.82f
     drawCircle(Color.Black.copy(alpha = 0.65f), face + r * 0.03f, c)

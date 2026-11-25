@@ -137,11 +137,9 @@ fun Keybed(tiers: List<IntRange>, leds: PanelLeds, prefs: PanelPrefs, input: Pan
         val gap = with(density) { 6.dp.toPx() }
         val geo = remember(tiers, wPx, hPx) { KeybedGeometry(tiers, wPx, hPx, if (tiers.size > 1) gap else 0f) }
 
-        Canvas(
+        Box(
             Modifier
                 .fillMaxSize()
-                // cached as a texture: redrawn on a press, not on every frame of the LCD
-                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
                 // keys near the screen's edges must not turn into Back or Home gestures
                 .systemGestureExclusion()
                 .pointerInput(geo) {
@@ -178,11 +176,10 @@ fun Keybed(tiers: List<IntRange>, leds: PanelLeds, prefs: PanelPrefs, input: Pan
                     }
                 },
         ) {
-            val f = prefs.finish
-            val cr = 6.dp.toPx()
-            val gap = 1.5.dp.toPx()
-            for (k in geo.drawOrder()) {
-                val down = pressed[k.n]
+            val drawKeyAndName: androidx.compose.ui.graphics.drawscope.DrawScope.(KeybedGeometry.Key, Boolean) -> Unit = { k, down ->
+                val f = prefs.finish
+                val cr = 6.dp.toPx()
+                val gap = 1.5.dp.toPx()
                 if (prefs.flat) {
                     val tl = Offset(k.left + if (k.black) 0f else gap, k.top)
                     val sz = Size(k.right - k.left - if (k.black) 0f else 2 * gap, k.bottom - k.top)
@@ -199,6 +196,16 @@ fun Keybed(tiers: List<IntRange>, leds: PanelLeds, prefs: PanelPrefs, input: Pan
                     namePaint.textSize = 12.dp.toPx()
                     namePaint.typeface = typeface
                     drawContext.canvas.nativeCanvas.drawText(Fm1Panel.noteName(k.n), (k.left + k.right) / 2, k.bottom - 14.dp.toPx(), namePaint)
+                }
+            }
+
+            // Static unpressed keybed cached offscreen; only pressed keys redraw on touch.
+            Canvas(Modifier.fillMaxSize().graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)) {
+                for (k in geo.drawOrder()) drawKeyAndName(k, false)
+            }
+            Canvas(Modifier.fillMaxSize()) {
+                for (k in geo.drawOrder()) {
+                    if (pressed[k.n]) drawKeyAndName(k, true)
                 }
             }
         }

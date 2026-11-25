@@ -583,6 +583,7 @@ private fun CompactPortraitPager(
     Column(Modifier.fillMaxSize()) {
         HorizontalPager(
             state = pagerState,
+            beyondViewportPageCount = 1,
             modifier = Modifier.weight(1f).fillMaxWidth(),
         ) { page ->
             when (page) {
