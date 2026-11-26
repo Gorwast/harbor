@@ -4,10 +4,14 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Bitmap
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.util.Log
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import com.markwhite.harbor.data.BufferMode
 import com.markwhite.harbor.data.Catalog
 import com.markwhite.harbor.data.FirmwareEntry
@@ -111,7 +115,12 @@ class Harbor(
 
     fun setOnScreen(front: Boolean) {
         onScreen = front
-        if (started) NativeEngine.setBackground(!front)
+        if (started) {
+            NativeEngine.setBackground(!front)
+            // Android's /background cpuset restricts a backgrounded process to little cores and
+            // clears thread affinity masks; re-pin once back in the foreground (top-app cpuset).
+            if (front) NativeEngine.setPrimeCores(settings.primeCores.value)
+        }
     }
 
     @Volatile private var started = false
@@ -151,15 +160,22 @@ class Harbor(
         }
     }
 
-    private fun leadFrames() = if (settings.bufferMode.value == BufferMode.LowLatency) 768 else 2048
+    private fun leadFrames(mode: BufferMode = settings.bufferMode.value) = when (mode) {
+        BufferMode.LowLatency -> 768
+        BufferMode.Balanced -> 1536
+        BufferMode.Stable -> 3072
+    }
+
+    private fun isLowLatency(mode: BufferMode = settings.bufferMode.value) = mode != BufferMode.Stable
 
     /** Start the engine and audio (idempotent), and the status loop. */
     @Synchronized
     fun ensureStarted() {
         if (started) return
         started = true
-        NativeEngine.start(leadFrames(), settings.bufferMode.value == BufferMode.LowLatency)
+        NativeEngine.start(leadFrames(), isLowLatency())
         NativeEngine.setBackground(!onScreen)
+        if (settings.primeCores.value) NativeEngine.setPrimeCores(true)
         audio.requestAudioFocus(focus)
         context.registerReceiver(noisy, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY), Context.RECEIVER_NOT_EXPORTED)
         scope.launch { statusLoop() }
@@ -265,6 +281,28 @@ class Harbor(
     }
 
     private val lcdBuf: ByteBuffer = ByteBuffer.allocateDirect(240 * 240 * 2).order(ByteOrder.LITTLE_ENDIAN)
+    private val lcdBitmap: Bitmap by lazy {
+        Bitmap.createBitmap(240, 240, Bitmap.Config.RGB_565).apply { eraseColor(android.graphics.Color.BLACK) }
+    }
+    /** Single shared 240x240 RGB_565 bitmap drawn by all [com.markwhite.harbor.ui.panel.LcdView] instances. */
+    val lcdImage: ImageBitmap by lazy { lcdBitmap.asImageBitmap() }
+    private val _lcdFrame = mutableIntStateOf(0)
+    /** Increments whenever [pollLcdFrame] uploads a new LCD revision into [lcdImage]. */
+    val lcdFrame: Int get() = _lcdFrame.intValue
+    private var sharedLcdRev = -1L
+
+    /** Poll the native framebuffer once per vsync and update [lcdImage] when changed. */
+    @Synchronized
+    fun pollLcdFrame() {
+        if (!started) return
+        val rev = NativeEngine.lcd(lcdBuf, sharedLcdRev)
+        if (rev == sharedLcdRev) return
+        sharedLcdRev = rev
+        lcdBuf.rewind()
+        lcdBitmap.copyPixelsFromBuffer(lcdBuf)
+        lcdBuf.rewind()
+        _lcdFrame.intValue++
+    }
 
     /**
      * Copy the screen into [bitmap] (240x240 RGB_565) if its revision isn't [since] (the bitmap's
@@ -312,7 +350,12 @@ class Harbor(
 
     fun setBufferMode(mode: BufferMode) {
         settings.setBufferMode(mode)
-        if (started) NativeEngine.restartAudio(leadFrames(), mode == BufferMode.LowLatency)
+        if (started) NativeEngine.restartAudio(leadFrames(mode), isLowLatency(mode))
+    }
+
+    fun setPrimeCores(primeOnly: Boolean) {
+        settings.setPrimeCores(primeOnly)
+        if (started) NativeEngine.setPrimeCores(primeOnly)
     }
 
     // -------------------------------------------------------------------------------- audio
@@ -332,6 +375,7 @@ class Harbor(
         paused = false
         audio.requestAudioFocus(focus)
         NativeEngine.setPaused(false)
+        if (onScreen) NativeEngine.setPrimeCores(settings.primeCores.value)
         if (_phase.value is Phase.Paused) _phase.value = Phase.Running
     }
 
@@ -339,7 +383,7 @@ class Harbor(
 
     /** The output device changed (routing callback): reopen the stream on the new one. */
     fun audioDeviceChanged() {
-        if (started && !paused) NativeEngine.restartAudio(leadFrames(), settings.bufferMode.value == BufferMode.LowLatency)
+        if (started && !paused) NativeEngine.restartAudio(leadFrames(), isLowLatency())
     }
 
     // ---------------------------------------------------------------------------- recording
@@ -352,15 +396,19 @@ class Harbor(
                 if (_recording.value != null) return@withLock
                 val firmware = _docked.value?.let { it.entry?.name ?: it.pkg.name } ?: "Harbor"
                 val name = recordings.nameFor(firmware)
+                val fmt = settings.recordingFormat.value
                 val (uri, fd) = try {
-                    recordings.create(name, firmware)
+                    // M4A records as 16-bit WAV first, then encodes to AAC on stop.
+                    val ext = if (fmt == com.markwhite.harbor.data.RecordingFormat.M4a) "wav" else fmt.ext
+                    val mime = if (fmt == com.markwhite.harbor.data.RecordingFormat.M4a) "audio/x-wav" else fmt.mime
+                    recordings.create(name, firmware, ext, mime)
                 } catch (e: Exception) {
                     EventLog.w("couldn't start a recording: ${e.message}")
                     _events.tryEmit(HarborEvent.Message("Couldn't start a recording: ${e.message ?: "no space"}"))
                     return@withLock
                 }
-                if (NativeEngine.recordStart(fd.detachFd())) {
-                    EventLog.i("recording \"$name\"")
+                if (NativeEngine.recordStart(fd.detachFd(), fmt.nativeCode)) {
+                    EventLog.i("recording \"$name\" (${fmt.label})")
                     _recording.value = Recording(name, uri)
                 } else {
                     recordings.delete(uri)
@@ -391,9 +439,30 @@ class Harbor(
                         _events.tryEmit(HarborEvent.Message("Nothing was recorded."))
                     }
                     else -> {
-                        recordings.publish(r.uri)
-                        EventLog.i("recorded \"${r.name}\": ${frames / 44_100} s")
-                        _events.tryEmit(HarborEvent.Recorded(r.name, r.uri, frames / 44_100))
+                        val fmt = settings.recordingFormat.value
+                        if (fmt == com.markwhite.harbor.data.RecordingFormat.M4a) {
+                            val firmware = _docked.value?.let { it.entry?.name ?: it.pkg.name } ?: "Harbor"
+                            val m4aUri = runCatching {
+                                val (outUri, outFd) = recordings.create(r.name, firmware, fmt.ext, fmt.mime)
+                                outFd.close()
+                                recordings.transcodeWavToM4a(r.uri, outUri, settings.m4aBitrateKbps.value * 1000)
+                                outUri
+                            }.getOrNull()
+                            if (m4aUri != null) {
+                                recordings.delete(r.uri)
+                                recordings.publish(m4aUri)
+                                EventLog.i("recorded \"${r.name}.m4a\": ${frames / 44_100} s")
+                                _events.tryEmit(HarborEvent.Recorded(r.name, m4aUri, frames / 44_100))
+                            } else {
+                                recordings.publish(r.uri)
+                                EventLog.w("M4A encode failed; kept WAV for \"${r.name}\"")
+                                _events.tryEmit(HarborEvent.Recorded(r.name, r.uri, frames / 44_100))
+                            }
+                        } else {
+                            recordings.publish(r.uri)
+                            EventLog.i("recorded \"${r.name}\": ${frames / 44_100} s")
+                            _events.tryEmit(HarborEvent.Recorded(r.name, r.uri, frames / 44_100))
+                        }
                     }
                 }
             }
@@ -531,8 +600,8 @@ class Harbor(
                 if (audioRetries == 1 || audioRetries % 10 == 0)
                     EventLog.w("audio output closed (route change or error): reopening (try $audioRetries)")
                 if (audioRetries == 5) _events.tryEmit(HarborEvent.Message("Harbor can't open the audio output. Try another output, or restart the phone."))
-                NativeEngine.start(leadFrames(), settings.bufferMode.value == BufferMode.LowLatency)
-        NativeEngine.setBackground(!onScreen)
+                NativeEngine.start(leadFrames(), isLowLatency())
+                NativeEngine.setBackground(!onScreen)
             }
             if (d != null && s.bootId == currentBoot) {
                 if (s.state != lastState) {

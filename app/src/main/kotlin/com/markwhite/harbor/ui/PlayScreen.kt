@@ -97,6 +97,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import androidx.compose.ui.Alignment
@@ -201,6 +202,14 @@ fun PlayScreen(ui: UiState, panel: PanelState, mode: LayoutMode, go: (Screen) ->
     val app = LocalContext.current.applicationContext as HarborApp
     val sources by app.midi.sources.collectAsState()
     val connectedSources = remember(sources) { sources.filter { it.enabled && it.connected } }
+
+    // Single 60 Hz LCD poller shared across all LcdView instances (including HorizontalPager pages).
+    LaunchedEffect(panel.harbor) {
+        while (true) {
+            withFrameNanos { }
+            panel.harbor.pollLcdFrame()
+        }
+    }
 
     var showColorsSheet by remember { mutableStateOf(false) }
     var midiLearnActive by remember { mutableStateOf(false) }
@@ -430,7 +439,7 @@ private fun PerfBanner(ui: UiState, harbor: Harbor, go: (Screen) -> Unit, modifi
     var problem by remember { mutableStateOf(PerfWatch.Problem.None) }
     LaunchedEffect(ui.statusFlow, ui.bufferMode) {
         ui.statusFlow.collect { s ->
-            problem = perf.update(s, ui.bufferMode == BufferMode.LowLatency, System.currentTimeMillis())
+            problem = perf.update(s, ui.bufferMode != BufferMode.Stable, System.currentTimeMillis())
         }
     }
     var dismissed by remember { mutableStateOf(PerfWatch.Problem.None) }

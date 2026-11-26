@@ -5,14 +5,14 @@
 //! coarse; nothing here is called per sample from Kotlin.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
 use jni::objects::{JByteArray, JByteBuffer, JClass, JDoubleArray, JFloatArray, JIntArray, JObject, JString};
 use jni::sys::{jboolean, jbyteArray, jint, jintArray, jlong, jlongArray, jobjectArray, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 
-use harbor_engine::engine::{AudioOut, Boot, Cmd, Engine, RunState, WorkReport, LCD_PIXELS};
+use harbor_engine::engine::{AudioOut, Boot, Cmd, Engine, RunState, Shared, WorkReport, LCD_PIXELS};
 use harbor_engine::midi::{
     panic_messages, ControlTarget, KnobMode, MappingRule, MidiParser, PanelAction, Sensitivity,
     Trigger, TriggerKind,
@@ -52,9 +52,16 @@ fn update_lead_for_audio(h: &Host) {
 }
 
 static HOST: Mutex<Option<Host>> = Mutex::new(None);
+/// Separate handle to `Engine.shared` so high-frequency UI polling (LCD, LEDs, diagnostics) never
+/// contends on the global `HOST` mutex with incoming MIDI or control calls.
+static SHARED: RwLock<Option<Arc<Shared>>> = RwLock::new(None);
 
 fn host() -> MutexGuard<'static, Option<Host>> {
     HOST.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn shared() -> Option<Arc<Shared>> {
+    SHARED.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// CLOCK_MONOTONIC in nanoseconds, the clock of `System.nanoTime` and of MIDI timestamps.
@@ -85,14 +92,17 @@ mod libc_timespec {
 /// session if the system has them.
 fn engine_thread_setup() -> Option<WorkReport> {
     audio_priority();
-    pin_fast_cores();
+    pin_fast_cores(false);
     let mut hint = hint::Hint::for_this_thread()?;
     Some(Box::new(move |busy, audio, bg| hint.report(busy, audio, bg)))
 }
 
-/// Prefer the SoC's fastest CPU cluster (e.g. Cortex-X1 on Tensor G2) so Android doesn't leave
-/// or migrate the emulator onto little cores between sleeps.
-fn pin_fast_cores() {
+/// Pin the emulator thread to fast CPU clusters so Android does not schedule it onto little cores
+/// between sleeps. When `prime_only` is true, restrict to peak-clock prime cores (>= 95% max freq,
+/// e.g. Cortex-X1 on Tensor G2); otherwise allow both prime and big cores (>= 75% max freq).
+fn pin_fast_cores(prime_only: bool) {
+    #[cfg(not(target_os = "android"))]
+    let _ = prime_only;
     #[cfg(target_os = "android")]
     {
         let mut freqs: Vec<(usize, u64)> = Vec::new();
@@ -105,25 +115,26 @@ fn pin_fast_cores() {
             }
         }
         let Some(max_f) = freqs.iter().map(|&(_, f)| f).max() else { return };
-        // Exclude little cores (< 75% of peak clock, e.g. A55 on Tensor G2) while keeping both
-        // prime (X1) and big (A78) cores available so sustained DSP avoids per-core X1 thermal
-        // throttling (measured on Pixel 7 Pro: big >= prime).
-        let big: Vec<usize> = freqs.iter().filter(|&&(_, f)| f >= max_f * 75 / 100).map(|&(c, _)| c).collect();
-        if big.is_empty() || big.len() == freqs.len() {
+        let pct = if prime_only { 95 } else { 75 };
+        let cores: Vec<usize> = freqs.iter().filter(|&&(_, f)| f >= max_f * pct / 100).map(|&(c, _)| c).collect();
+        if cores.is_empty() {
             return;
         }
         // SAFETY: zeroed cpu_set_t populated with valid cpu indices (< 32).
         unsafe {
             let mut set: libc::cpu_set_t = std::mem::zeroed();
             libc::CPU_ZERO(&mut set);
-            for &c in &big {
+            for &c in &cores {
                 libc::CPU_SET(c, &mut set);
             }
             if libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) == 0 {
-                let min_f = freqs.iter().filter(|(c, _)| big.contains(c)).map(|&(_, f)| f).min().unwrap_or(0);
-                log::info!("engine thread: pinned to big cores {:?} (>= {} MHz)", big, min_f / 1000);
+                let min_f = freqs.iter().filter(|(c, _)| cores.contains(c)).map(|&(_, f)| f).min().unwrap_or(0);
+                let kind = if prime_only { "prime" } else { "big" };
+                log::info!("engine thread: pinned to {kind} cores {:?} (>= {} MHz)", cores, min_f / 1000);
             } else {
-                log::warn!("engine thread: sched_setaffinity failed");
+                // Expected when Android's background cpuset temporarily restricts the process to little cores;
+                // Harbor re-applies affinity when returning to the foreground.
+                log::warn!("engine thread: sched_setaffinity failed ({})", std::io::Error::last_os_error());
             }
         }
     }
@@ -168,7 +179,12 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_start(
     let requested = lead.max(64) as usize;
     let mut h = host();
     if h.is_none() {
-        let (engine, out) = Engine::start(requested, engine_thread_setup);
+        let (engine, out) = Engine::start_with_pin(
+            requested,
+            engine_thread_setup,
+            Some(Box::new(pin_fast_cores)),
+        );
+        *SHARED.write().unwrap_or_else(|e| e.into_inner()) = Some(engine.shared.clone());
         let out = Arc::new(Mutex::new(out));
         let audio = audio::Output::new(out.clone(), low_latency != 0);
         *h = Some(Host {
@@ -195,6 +211,7 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_start(
 /// Stop the audio output and the engine.
 #[no_mangle]
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_shutdown(_env: JNIEnv, _: JClass) {
+    *SHARED.write().unwrap_or_else(|e| e.into_inner()) = None;
     let h = host().take();
     drop(h);
 }
@@ -292,6 +309,12 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_velocity(_e
 #[no_mangle]
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_setClock(_env: JNIEnv, _: JClass, mhz: jint, auto: jboolean) {
     if let Some(h) = host().as_ref() { h.engine.send(Cmd::Clock { mhz: mhz as u32, auto: auto != 0 }) }
+}
+
+/// Switch the engine thread affinity between prime cores (>= 95% peak clock) and all big cores (>= 75%).
+#[no_mangle]
+pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_setPrimeCores(_env: JNIEnv, _: JClass, prime_only: jboolean) {
+    if let Some(h) = host().as_ref() { h.engine.send(Cmd::PinPrime(prime_only != 0)) }
 }
 
 // ------------------------------------------------------------------------------------- MIDI
@@ -490,21 +513,29 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_panic(_env:
 /// if its revision isn't `since` (the caller's last copy). Returns the revision copied (or `since`).
 #[no_mangle]
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_lcd(env: JNIEnv, _: JClass, buf: JByteBuffer, since: jlong) -> jlong {
-    let h = host();
-    let Some(h) = h.as_ref() else { return since };
-    if h.engine.shared.lcd_rev.load(std::sync::atomic::Ordering::Acquire) as jlong == since {
+    let Some(shared) = shared() else { return since };
+    if shared.lcd_rev.load(std::sync::atomic::Ordering::Acquire) as jlong == since {
         return since;
     }
-    let v = h.engine.shared.view.lock().unwrap();
-    if v.lcd_rev as jlong != since {
+    let lcd = shared.lcd.lock().unwrap();
+    if lcd.rev as jlong != since {
         if let (Ok(ptr), Ok(cap)) = (env.get_direct_buffer_address(&buf), env.get_direct_buffer_capacity(&buf)) {
             if cap >= LCD_PIXELS * 2 {
-                // SAFETY: a direct buffer of at least that many bytes, owned by the caller.
-                let dst = unsafe { std::slice::from_raw_parts_mut(ptr, LCD_PIXELS * 2) };
-                for (d, p) in dst.chunks_exact_mut(2).zip(v.lcd.iter()) {
-                    d.copy_from_slice(&p.to_le_bytes());
+                #[cfg(target_endian = "little")]
+                // SAFETY: `ptr` is a caller-owned direct buffer of at least `LCD_PIXELS * 2` bytes,
+                // `lcd.pixels` holds `LCD_PIXELS` little-endian `u16`s, and the two regions do not overlap.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(lcd.pixels.as_ptr() as *const u8, ptr, LCD_PIXELS * 2);
                 }
-                return v.lcd_rev as jlong;
+                #[cfg(not(target_endian = "little"))]
+                {
+                    // SAFETY: a direct buffer of at least that many bytes, owned by the caller.
+                    let dst = unsafe { std::slice::from_raw_parts_mut(ptr, LCD_PIXELS * 2) };
+                    for (d, p) in dst.chunks_exact_mut(2).zip(lcd.pixels.iter()) {
+                        d.copy_from_slice(&p.to_le_bytes());
+                    }
+                }
+                return lcd.rev as jlong;
             }
         }
     }
@@ -514,8 +545,8 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_lcd(env: JN
 /// The LEDs' on-fractions over the last ~16 ms (41 floats; SMK-37: its button LEDs first).
 #[no_mangle]
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_leds(env: JNIEnv, _: JClass, out: JFloatArray) {
-    if let Some(h) = host().as_ref() {
-        let leds = h.engine.shared.view.lock().unwrap().leds;
+    if let Some(shared) = shared() {
+        let leds = shared.view.lock().unwrap().leds;
         let _ = env.set_float_array_region(&out, 0, &leds);
     }
 }
@@ -523,8 +554,9 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_leds(env: J
 /// External MIDI panel state (8 ints): cumulative clicks for encoders 0..6, then MASTER pot 0..1023.
 #[no_mangle]
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_panelControls(env: JNIEnv, _: JClass, out: JIntArray) {
-    if let Some(h) = host().as_ref() {
-        let vals = [
+    let vals = {
+        let h = host();
+        h.as_ref().map(|h| [
             h.enc_clicks[0],
             h.enc_clicks[1],
             h.enc_clicks[2],
@@ -533,7 +565,9 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_panelContro
             h.enc_clicks[5],
             h.enc_clicks[6],
             h.pot as i32,
-        ];
+        ])
+    };
+    if let Some(vals) = vals {
         let _ = env.set_int_array_region(&out, 0, &vals);
     }
 }
@@ -541,58 +575,59 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_panelContro
 /// Status fields, in the order of NativeEngine.Status (Kotlin): see there.
 #[no_mangle]
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_status(env: JNIEnv, _: JClass, out: JDoubleArray) {
-    let h = host();
-    let Some(h) = h.as_ref() else { return };
-    let v = h.engine.shared.view.lock().unwrap();
-    let a = h.audio.info();
-    let state = match v.state { RunState::Idle => 0.0, RunState::Running => 1.0, RunState::Halted => 2.0, RunState::Failed => 3.0 };
-    let fields = [
-        state,
-        v.boot_id as f64,
-        (v.board == Board::Smk37) as u8 as f64,
-        v.mhz as f64,
-        v.auto_clock as u8 as f64,
-        v.clock_steps as f64,
-        v.jit as u8 as f64,
-        v.speed as f64,
-        v.late as f64,
-        v.starved as f64,
-        v.peak[0] as f64,
-        v.peak[1] as f64,
-        v.clip as u8 as f64,
-        v.flash.revision as f64,
-        v.flash.boot_id as f64,
-        v.midi_dropped as f64,
-        v.lead as f64,
-        a.sample_rate as f64,
-        a.frames_per_burst as f64,
-        a.buffer_frames as f64,
-        a.running as u8 as f64,
-        a.exclusive as u8 as f64,
-        a.xruns as f64,
-        a.device_id as f64,
-        v.midi_in as f64,
-        h.recorder.as_ref().map_or(-1.0, |r| r.frames() as f64),
-    ];
+    let fields = {
+        let h = host();
+        let Some(h) = h.as_ref() else { return };
+        let v = h.engine.shared.view.lock().unwrap();
+        let a = h.audio.info();
+        let state = match v.state { RunState::Idle => 0.0, RunState::Running => 1.0, RunState::Halted => 2.0, RunState::Failed => 3.0 };
+        [
+            state,
+            v.boot_id as f64,
+            (v.board == Board::Smk37) as u8 as f64,
+            v.mhz as f64,
+            v.auto_clock as u8 as f64,
+            v.clock_steps as f64,
+            v.jit as u8 as f64,
+            v.speed as f64,
+            v.late as f64,
+            v.starved as f64,
+            v.peak[0] as f64,
+            v.peak[1] as f64,
+            v.clip as u8 as f64,
+            v.flash.revision as f64,
+            v.flash.boot_id as f64,
+            v.midi_dropped as f64,
+            v.lead as f64,
+            a.sample_rate as f64,
+            a.frames_per_burst as f64,
+            a.buffer_frames as f64,
+            a.running as u8 as f64,
+            a.exclusive as u8 as f64,
+            a.xruns as f64,
+            a.device_id as f64,
+            v.midi_in as f64,
+            h.recorder.as_ref().map_or(-1.0, |r| r.frames() as f64),
+        ]
+    };
     let _ = env.set_double_array_region(&out, 0, &fields);
 }
 
 /// The last boot error, or "".
 #[no_mangle]
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_error(env: JNIEnv, _: JClass) -> jstring {
-    let msg = host().as_ref().map(|h| h.engine.shared.view.lock().unwrap().error.clone()).unwrap_or_default();
+    let msg = shared().map(|s| s.view.lock().unwrap().error.clone()).unwrap_or_default();
     env.new_string(msg).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
 /// Take any new engine diagnostic lines (internal resets, cpu1 release, console, unknown MMIO), or null.
 #[no_mangle]
 pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_pollDiagnostic(env: JNIEnv, _: JClass) -> jstring {
-    let h = host();
-    let Some(h) = h.as_ref() else { return std::ptr::null_mut() };
-    if !h.engine.shared.diag_pending.swap(false, std::sync::atomic::Ordering::AcqRel) {
+    let Some(shared) = shared() else { return std::ptr::null_mut() };
+    if !shared.diag_pending.swap(false, std::sync::atomic::Ordering::AcqRel) {
         return std::ptr::null_mut();
     }
-    let msg = std::mem::take(&mut h.engine.shared.view.lock().unwrap().diagnostic);
+    let msg = std::mem::take(&mut shared.view.lock().unwrap().diagnostic);
     if msg.is_empty() {
         return std::ptr::null_mut();
     }
@@ -628,7 +663,7 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_flush(mut e
 /// Start recording the firmware's output as a WAV into `fd` (a writable, seekable file; this
 /// takes ownership and closes it). False if a recording is already running or the file failed.
 #[no_mangle]
-pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_recordStart(_env: JNIEnv, _: JClass, fd: jint) -> jboolean {
+pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_recordStart(_env: JNIEnv, _: JClass, fd: jint, format: jint) -> jboolean {
     #[cfg(unix)]
     {
         use std::os::fd::FromRawFd;
@@ -636,7 +671,8 @@ pub extern "system" fn Java_com_markwhite_harbor_engine_NativeEngine_recordStart
         let file = unsafe { std::fs::File::from_raw_fd(fd) };
         let mut h = host();
         let Some(h) = h.as_mut().filter(|h| h.recorder.is_none()) else { return JNI_FALSE };
-        match Recorder::start(file) {
+        let fmt = harbor_engine::recorder::Format::from_code(format);
+        match Recorder::start_with(file, fmt) {
             Ok((rec, tap)) => {
                 h.engine.send(Cmd::Record(Some(tap)));
                 h.recorder = Some(rec);

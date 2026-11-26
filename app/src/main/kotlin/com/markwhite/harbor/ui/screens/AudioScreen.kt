@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.markwhite.harbor.HarborApp
 import com.markwhite.harbor.data.BufferMode
+import com.markwhite.harbor.data.RecordingFormat
 import com.markwhite.harbor.engine.EngineStatus
 import com.markwhite.harbor.engine.NativeEngine
 import com.markwhite.harbor.ui.UiState
@@ -49,6 +50,9 @@ fun AudioScreen(app: HarborApp, ui: UiState, onBack: () -> Unit) {
     val context = LocalContext.current
     val s by app.harbor.status.collectAsState()
     val buffer by app.settings.bufferMode.collectAsState()
+    val primeCores by app.settings.primeCores.collectAsState()
+    val recFormat by app.settings.recordingFormat.collectAsState()
+    val m4aBitrate by app.settings.m4aBitrateKbps.collectAsState()
     val background by app.settings.keepPlayingInBackground.collectAsState()
     val screenOn by app.settings.keepScreenOn.collectAsState()
     val btWarning by app.settings.btWarning.collectAsState()
@@ -72,14 +76,43 @@ fun AudioScreen(app: HarborApp, ui: UiState, onBack: () -> Unit) {
             if (System.currentTimeMillis() - clipHeld < 2000) {
                 Text("CLIP · This firmware is clipping. Turn MASTER down.", color = Tokens.error)
             }
-            Choice("Audio buffer", listOf(BufferMode.LowLatency to "Low latency", BufferMode.Stable to "Stable"), buffer) { app.harbor.setBufferMode(it) }
-            Text("Stable adds a little delay to the keys but rides out a busy device.", style = MaterialTheme.typography.bodySmall, color = Tokens.dim)
+            Choice(
+                "Audio buffer",
+                listOf(BufferMode.LowLatency to "Low latency", BufferMode.Balanced to "Balanced", BufferMode.Stable to "Stable"),
+                buffer,
+            ) { app.harbor.setBufferMode(it) }
+            Text("Larger buffers add a little delay to the keys but ride out heavy voices and busy devices.", style = MaterialTheme.typography.bodySmall, color = Tokens.dim)
+        }
+
+        Section("Recording") {
+            Choice(
+                "Format",
+                RecordingFormat.entries.map { it to it.label },
+                recFormat,
+            ) { app.settings.setRecordingFormat(it) }
+            if (recFormat == RecordingFormat.M4a) {
+                Choice(
+                    "M4A quality",
+                    listOf(128 to "128 kbps", 192 to "192 kbps", 256 to "256 kbps"),
+                    m4aBitrate,
+                ) { app.settings.setM4aBitrateKbps(it) }
+            }
+            Text(
+                "Saved to Music/Harbor at 44.1 kHz stereo.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Tokens.dim,
+            )
         }
 
         Section("Emulation") {
             ClockPicker(app, s)
             Text("A lower clock gives the firmware less time to compute, so under heavy load it may drop voices or effects.",
                 style = MaterialTheme.typography.bodySmall, color = Tokens.dim)
+            SwitchRow(
+                "Prefer prime CPU cores",
+                primeCores,
+                "Pin the emulator to the fastest cores (may run warmer)",
+            ) { app.harbor.setPrimeCores(it) }
             val load = s.load.coerceIn(0.0, 1.5)
             Text("Load ${(load * 100).toInt()}% of the audio time" + if (s.speed > 0) " (${"%.2f".format(s.speed)}× real time)" else "")
             LinearProgressIndicator(progress = { load.toFloat().coerceAtMost(1f) }, Modifier.fillMaxWidth(),
@@ -89,7 +122,7 @@ fun AudioScreen(app: HarborApp, ui: UiState, onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall, color = Tokens.dim)
             OutlinedButton(onClick = {
                 val cm = context.getSystemService(ClipboardManager::class.java)
-                cm.setPrimaryClip(ClipData.newPlainText("Harbor report", report(context, ui, s, history)))
+                cm.setPrimaryClip(ClipData.newPlainText("Harbor report", report(context, ui, s, primeCores, history)))
             }) { Text("Copy a report") }
         }
 
@@ -154,12 +187,12 @@ fun bluetoothRoute(context: android.content.Context, id: Int): String? {
     return if (d.type in setOf(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLE_SPEAKER)) d.productName.toString() else null
 }
 
-private fun report(context: android.content.Context, ui: UiState, s: EngineStatus, history: List<String>): String {
+private fun report(context: android.content.Context, ui: UiState, s: EngineStatus, primeCores: Boolean, history: List<String>): String {
     return buildString {
         appendLine("Harbor report")
         appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL} (${Build.SOC_MODEL}), Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         appendLine("Firmware: ${ui.title} (${ui.docked?.pkg?.sha ?: "-"})")
-        appendLine("Clock: ${s.mhz} MHz, automatic ${s.autoClock}, steps ${s.clockSteps}; JIT ${s.jit}")
+        appendLine("Clock: ${s.mhz} MHz, automatic ${s.autoClock}, steps ${s.clockSteps}; JIT ${s.jit}; prime cores $primeCores")
         appendLine("Output: ${routeName(context, s.deviceId)}, ${s.sampleRate} Hz, burst ${s.framesPerBurst}, buffer ${s.bufferFrames}, exclusive ${s.exclusive}, lead ${s.leadFrames}")
         appendLine("Speed (x real time, last 30 s): ${history.joinToString(" ")}")
         appendLine("Dropped frames: ${s.starved}; AAudio xruns ${s.xruns}; MIDI bytes dropped ${s.midiDropped}")

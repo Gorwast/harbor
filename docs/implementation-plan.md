@@ -265,6 +265,31 @@ engineering milestones and risks.
     `harbor-bench` to drop the superseded `--baseline-dual` flag and report `loop_skip`.
   - Pending Pixel 7 Pro reconnect (`adb`): re-run `harbor-bench` on `SHRUB-V1.01` and smoke-test
     the rebuilt `profile` APK on device.
+- [x] Audio pipeline, locking, and LCD rendering upgrade (2026-11-25):
+  - `native/Cargo.toml`: switched `[profile.release]` from `lto = "thin"` to `lto = true` for full
+    cross-crate LTO across `harbor-engine`, `fm1-soc`, and `fm1-core`.
+  - `native/harbor-engine/src/engine.rs`: moved the 115 KB LCD framebuffer into a dedicated
+    `Shared.lcd: Mutex<LcdFrame>` (eliminating double copy and decoupling it from `Shared.view`),
+    replaced per-sample `rtrb` `push`/`pop` with batched `write_chunk_uninit`/`read_chunk` in both
+    the engine thread and real-time `AudioOut::render` (44.1 kHz and resampled paths), scaled dynamic
+    `CHUNK` up to `40k` steady / `80k` catch-up (keeping `20k` within 2 ms of queued MIDI), throttled
+    `Instant::now()` / flash / view housekeeping checks, and added `Cmd::PinPrime(bool)`.
+  - `native/harbor-jni/src/lib.rs`: added a lock-free-read `SHARED: RwLock<Option<Arc<Shared>>>`
+    so `lcd`, `leds`, `error`, and `pollDiagnostic` never contend on the global `HOST` mutex with
+    `midiData`; replaced the 57,600-iteration pixel loop in `NativeEngine_lcd` with a single
+    little-endian `copy_nonoverlapping` (`memcpy`) locking only `shared.lcd`; added runtime big vs.
+    prime core affinity switching (`pin_fast_cores(prime_only)` + `NativeEngine_setPrimeCores`).
+  - `app/`: added `BufferMode.Balanced` (1536 frames, ~35 ms) and raised `Stable` to 3072 frames
+    (~70 ms) while keeping `LowLatency` at 768 frames (~17 ms); added **Prefer prime CPU cores**
+    toggle in `AudioScreen.kt` (re-applied on `setOnScreen(true)` and `resume()` so Android's
+    `/background` cpuset does not permanently drop fast-core affinity); moved LCD polling to a single
+    shared `Bitmap`/`ImageBitmap` in `Harbor` polled once per vsync from `PlayScreen` so
+    `HorizontalPager(beyondViewportPageCount = 1)` no longer runs 2–3 duplicate 60 Hz LCD pollers.
+  - Pixel 7 Pro (`GS201`, `fm1-emu` `736aded` + `lto = true`, 6 s `harbor-bench` on `SHRUB-V1.01`):
+    `--pin big` (`cpu4..7`): `0.77×` @ 240 MHz, `0.82×` @ 200 MHz, `0.89×` @ 160 MHz, `0.94×` @ 120 MHz,
+    `0.97×` @ 100 MHz, `1.10×` @ 80 MHz, `1.69×` @ 60 MHz (up from `0.35×` @ 240 MHz / `0.48×` @ 120 MHz
+    in the 2026-11-17 baseline); `--pin prime` (`cpu6..7`): `0.76×` @ 240 MHz, `0.92×` @ 120 MHz,
+    `1.64×` @ 60 MHz.
 
 ---
 

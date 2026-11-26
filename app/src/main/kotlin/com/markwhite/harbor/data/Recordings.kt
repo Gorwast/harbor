@@ -32,10 +32,10 @@ class Recordings(private val context: Context) {
     }
 
     /** A new, pending recording and its file, opened for writing and seeking. */
-    fun create(name: String, firmware: String): Pair<Uri, ParcelFileDescriptor> {
+    fun create(name: String, firmware: String, ext: String = "wav", mime: String = "audio/x-wav"): Pair<Uri, ParcelFileDescriptor> {
         val values = ContentValues().apply {
-            put(MediaStore.Audio.Media.DISPLAY_NAME, "$name.wav")
-            put(MediaStore.Audio.Media.MIME_TYPE, "audio/x-wav")
+            put(MediaStore.Audio.Media.DISPLAY_NAME, "$name.$ext")
+            put(MediaStore.Audio.Media.MIME_TYPE, mime)
             put(MediaStore.Audio.Media.RELATIVE_PATH, FOLDER)
             put(MediaStore.Audio.Media.TITLE, name)
             put(MediaStore.Audio.Media.ARTIST, firmware)
@@ -59,6 +59,83 @@ class Recordings(private val context: Context) {
 
     fun delete(uri: Uri) {
         runCatching { resolver.delete(uri, null, null) }
+    }
+
+    /** Encode a finished 16-bit 44.1 kHz stereo WAV at [wavUri] into AAC-LC `.m4a` at [m4aUri]. */
+    fun transcodeWavToM4a(wavUri: Uri, m4aUri: Uri, bitrateBps: Int) {
+        val codec = android.media.MediaCodec.createEncoderByType(android.media.MediaFormat.MIMETYPE_AUDIO_AAC)
+        val format = android.media.MediaFormat.createAudioFormat(android.media.MediaFormat.MIMETYPE_AUDIO_AAC, 44_100, 2).apply {
+            setInteger(android.media.MediaFormat.KEY_AAC_PROFILE, android.media.MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            setInteger(android.media.MediaFormat.KEY_BIT_RATE, bitrateBps)
+            setInteger(android.media.MediaFormat.KEY_MAX_INPUT_SIZE, 16 * 1024)
+        }
+        resolver.openFileDescriptor(wavUri, "r")!!.use { inPfd ->
+            resolver.openFileDescriptor(m4aUri, "rw")!!.use { outPfd ->
+                java.io.FileInputStream(inPfd.fileDescriptor).use { input ->
+                    val skip = ByteArray(44)
+                    var skipped = 0
+                    while (skipped < 44) {
+                        val r = input.read(skip, skipped, 44 - skipped)
+                        if (r <= 0) break
+                        skipped += r
+                    }
+                    codec.configure(format, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE)
+                    codec.start()
+                    val muxer = android.media.MediaMuxer(outPfd.fileDescriptor, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                    var track = -1
+                    var muxerStarted = false
+                    var eosIn = false
+                    var eosOut = false
+                    var ptsUs = 0L
+                    val buf = ByteArray(8192)
+                    val info = android.media.MediaCodec.BufferInfo()
+                    try {
+                        while (!eosOut) {
+                            if (!eosIn) {
+                                val inIdx = codec.dequeueInputBuffer(10_000)
+                                if (inIdx >= 0) {
+                                    val ib = codec.getInputBuffer(inIdx)!!
+                                    ib.clear()
+                                    val maxRead = minOf(buf.size, ib.remaining())
+                                    val n = input.read(buf, 0, maxRead)
+                                    if (n < 0) {
+                                        codec.queueInputBuffer(inIdx, 0, 0, ptsUs, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                        eosIn = true
+                                    } else {
+                                        ib.put(buf, 0, n)
+                                        codec.queueInputBuffer(inIdx, 0, n, ptsUs, 0)
+                                        ptsUs += (n / 4) * 1_000_000L / 44_100L
+                                    }
+                                }
+                            }
+                            val outIdx = codec.dequeueOutputBuffer(info, 10_000)
+                            when {
+                                outIdx == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                                    track = muxer.addTrack(codec.outputFormat)
+                                    muxer.start()
+                                    muxerStarted = true
+                                }
+                                outIdx >= 0 -> {
+                                    val ob = codec.getOutputBuffer(outIdx)!!
+                                    if ((info.flags and android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 && info.size > 0 && muxerStarted) {
+                                        ob.position(info.offset)
+                                        ob.limit(info.offset + info.size)
+                                        muxer.writeSampleData(track, ob, info)
+                                    }
+                                    codec.releaseOutputBuffer(outIdx, false)
+                                    if ((info.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) eosOut = true
+                                }
+                            }
+                        }
+                    } finally {
+                        if (muxerStarted) runCatching { muxer.stop() }
+                        runCatching { muxer.release() }
+                        runCatching { codec.stop() }
+                        runCatching { codec.release() }
+                    }
+                }
+            }
+        }
     }
 
     /**

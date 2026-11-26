@@ -1,6 +1,5 @@
 package com.markwhite.harbor.ui.panel
 
-import android.graphics.Bitmap
 import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.compose.foundation.Canvas
@@ -46,7 +45,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -55,7 +53,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -501,20 +498,10 @@ fun PanelButton(btn: Fm1Panel.Btn, led: Float, width: Dp, height: Dp, prefs: Pan
     }
 }
 
-/** The firmware's screen, pixel-exact (ui-spec §5.1.2). */
+/** The firmware's screen, pixel-exact (ui-spec §5.1.2). Shares [Harbor.lcdImage] across all views. */
 @Composable
 fun LcdView(harbor: Harbor, size: Dp, smooth: Boolean, modifier: Modifier = Modifier) {
-    val bitmap = remember { Bitmap.createBitmap(240, 240, Bitmap.Config.RGB_565).apply { eraseColor(android.graphics.Color.BLACK) } }
-    val image = remember(bitmap) { bitmap.asImageBitmap() }
-    var frame by remember { mutableIntStateOf(0) }
-    LaunchedEffect(harbor) {
-        var rev = -1L
-        while (true) {
-            withFrameNanos { }
-            val now = harbor.pollLcd(bitmap, rev)
-            if (now != rev) { rev = now; frame++ }
-        }
-    }
+    val image = harbor.lcdImage
     val px = with(LocalDensity.current) { size.roundToPx() }
     // Pixel-exact at a whole multiple of 240. Between multiples, nearest-neighbour alone makes some
     // LCD pixels a device pixel wider than others (strokes look uneven), so draw at the next whole
@@ -536,7 +523,7 @@ fun LcdView(harbor: Harbor, size: Dp, smooth: Boolean, modifier: Modifier = Modi
                     compositingStrategy = if (exact) CompositingStrategy.Auto else CompositingStrategy.Offscreen
                 },
         ) {
-            @Suppress("UNUSED_EXPRESSION") frame
+            @Suppress("UNUSED_EXPRESSION") harbor.lcdFrame
             drawImage(image, srcOffset = IntOffset.Zero, srcSize = IntSize(240, 240), dstOffset = IntOffset.Zero, dstSize = IntSize(drawn, drawn),
                 filterQuality = if (smooth) FilterQuality.Low else FilterQuality.None)
         }

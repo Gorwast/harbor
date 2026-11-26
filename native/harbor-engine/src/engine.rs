@@ -42,6 +42,8 @@ const CHUNK: u32 = 20_000;
 /// Told `(busy, audio, background)`: the engine spent `busy` making `audio` worth of output
 /// (about [`REPORT_EVERY`] at a time), and whether Harbor is running in the background.
 pub type WorkReport = Box<dyn FnMut(Duration, Duration, bool)>;
+/// Optional callback invoked on the engine thread when CPU affinity mode changes (`true` = prime cores).
+pub type PinCallback = Box<dyn FnMut(bool) + Send>;
 /// How much audio each [`WorkReport`] call covers.
 pub const REPORT_EVERY: Duration = Duration::from_millis(10);
 
@@ -70,6 +72,8 @@ pub enum Cmd {
     /// Start copying the firmware's output to a recording, or stop (`None`: the tap is dropped,
     /// which ends the recording).
     Record(Option<Tap>),
+    /// Switch CPU core affinity (`true`: prime cores only; `false`: big + prime cores).
+    PinPrime(bool),
 }
 
 pub struct Boot {
@@ -101,10 +105,21 @@ pub enum RunState {
     Failed,
 }
 
-/// What the app shows: the screen, the LEDs and how the machine is doing.
+/// The LCD framebuffer, kept under its own mutex so 60 Hz UI reads never contend with status/LEDs.
+pub struct LcdFrame {
+    pub rev: u64,
+    pub pixels: Vec<u16>,
+}
+
+impl Default for LcdFrame {
+    fn default() -> Self {
+        Self { rev: 0, pixels: vec![0; LCD_PIXELS] }
+    }
+}
+
+/// What the app shows: the status, the LEDs and how the machine is doing.
 pub struct View {
-    pub lcd: Vec<u16>,
-    /// Counts up whenever `lcd` changes.
+    /// Counts up whenever `Shared::lcd` changes.
     pub lcd_rev: u64,
     pub leds: [f32; 41],
     pub pads: [u32; 16],
@@ -140,7 +155,6 @@ pub struct View {
 impl Default for View {
     fn default() -> Self {
         View {
-            lcd: vec![0; LCD_PIXELS],
             lcd_rev: 0,
             leds: [0.0; 41],
             pads: [0; 16],
@@ -190,9 +204,10 @@ impl AudioClock {
 
 pub struct Shared {
     pub view: Mutex<View>,
+    pub lcd: Mutex<LcdFrame>,
     pub clock: AudioClock,
     pub lead: AtomicUsize,
-    /// Mirrors `view.lcd_rev` so the UI thread skips locking `view` when the screen didn't change.
+    /// Mirrors `lcd.rev` so the UI thread skips locking `lcd` when the screen didn't change.
     pub lcd_rev: AtomicU64,
     pub diag_pending: AtomicBool,
     pub background: AtomicBool,
@@ -221,9 +236,18 @@ impl Engine {
     /// `on_start` runs on the thread first (priority and the like) and may return a [`WorkReport`]
     /// to be told how long each stretch of audio took to make.
     pub fn start(lead: usize, on_start: impl FnOnce() -> Option<WorkReport> + Send + 'static) -> (Engine, AudioOut) {
+        Self::start_with_pin(lead, on_start, None)
+    }
+
+    pub fn start_with_pin(
+        lead: usize,
+        on_start: impl FnOnce() -> Option<WorkReport> + Send + 'static,
+        on_pin: Option<PinCallback>,
+    ) -> (Engine, AudioOut) {
         let (prod, cons) = rtrb::RingBuffer::new(RING);
         let shared = Arc::new(Shared {
             view: Mutex::new(View::default()),
+            lcd: Mutex::new(LcdFrame::default()),
             clock: AudioClock::default(),
             lead: AtomicUsize::new(lead.clamp(64, RING / 2)),
             lcd_rev: AtomicU64::new(0),
@@ -239,7 +263,7 @@ impl Engine {
             .name("harbor-engine".into())
             .spawn(move || {
                 let report = on_start();
-                run(s, cmd_rx, midi_rx, prod, report)
+                run(s, cmd_rx, midi_rx, prod, report, on_pin)
             })
             .expect("spawn the engine thread");
         let out = AudioOut { ring: cons, shared: shared.clone(), prev: [0.0; 2], next: [0.0; 2], pos: 1.0 };
@@ -306,32 +330,49 @@ impl AudioOut {
         let mut taken = 0u64;
         let mut starved = 0u64;
         if rate == RATE {
-            for f in out.chunks_exact_mut(2) {
-                match self.ring.pop() {
-                    Ok(v) => {
-                        f.copy_from_slice(&v);
-                        taken += 1;
+            let avail = self.ring.slots().min(frames);
+            if avail > 0 {
+                if let Ok(chunk) = self.ring.read_chunk(avail) {
+                    let (a, b) = chunk.as_slices();
+                    let mut idx = 0;
+                    for v in a.iter().chain(b.iter()) {
+                        out[idx] = v[0];
+                        out[idx + 1] = v[1];
+                        idx += 2;
                     }
-                    Err(_) => {
-                        f.fill(0.0);
-                        starved += 1;
-                    }
+                    taken = (a.len() + b.len()) as u64;
+                    chunk.commit_all();
                 }
             }
-        } else {
+            let got = taken as usize;
+            if got < frames {
+                out[got * 2..frames * 2].fill(0.0);
+                starved = (frames - got) as u64;
+            }
+        } else if frames > 0 {
             let step = RATE as f64 / rate as f64;
+            // Upper bound on input frames consumed across `frames` output steps (+2 guards FP rounding).
+            let max_need = (self.pos + step * frames as f64).floor().max(0.0) as usize + 2;
+            let avail = self.ring.slots().min(max_need);
+            let chunk = if avail > 0 { self.ring.read_chunk(avail).ok() } else { None };
+            let (a, b) = chunk.as_ref().map_or((&[][..], &[][..]), |c| c.as_slices());
+            let mut consumed = 0usize;
             for f in out.chunks_exact_mut(2) {
                 while self.pos >= 1.0 {
                     self.prev = self.next;
-                    self.next = match self.ring.pop() {
-                        Ok(v) => {
-                            taken += 1;
-                            v
-                        }
-                        Err(_) => {
-                            starved += 1;
-                            [0.0; 2]
-                        }
+                    self.next = if consumed < a.len() {
+                        let v = a[consumed];
+                        consumed += 1;
+                        taken += 1;
+                        v
+                    } else if consumed - a.len() < b.len() {
+                        let v = b[consumed - a.len()];
+                        consumed += 1;
+                        taken += 1;
+                        v
+                    } else {
+                        starved += 1;
+                        [0.0; 2]
                     };
                     self.pos -= 1.0;
                 }
@@ -340,8 +381,10 @@ impl AudioOut {
                 f[1] = self.prev[1] + (self.next[1] - self.prev[1]) * t;
                 self.pos += step;
             }
+            if let Some(chunk) = chunk {
+                chunk.commit(consumed);
+            }
         }
-        let _ = frames;
         let c = &self.shared.clock;
         c.taken.fetch_add(taken, Ordering::AcqRel);
         c.taken_ns.store(now_ns, Ordering::Release);
@@ -374,7 +417,14 @@ struct PendingFlush {
     since: Instant,
 }
 
-fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi>, mut out: rtrb::Producer<[f32; 2]>, mut report: Option<WorkReport>) {
+fn run(
+    shared: Arc<Shared>,
+    cmds: mpsc::Receiver<Cmd>,
+    midi: mpsc::Receiver<Midi>,
+    mut out: rtrb::Producer<[f32; 2]>,
+    mut report: Option<WorkReport>,
+    mut on_pin: Option<PinCallback>,
+) {
     let mut r: Option<Running> = None;
     let mut made: u64 = 0; // frames pushed into the ring
     let mut due: VecDeque<Midi> = VecDeque::new();
@@ -389,7 +439,7 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
     let mut midi_in = 0u64;
     let mut led_ms = 0u64;
     let mut tap: Option<Tap> = None;
-    let mut lcd_cache: Vec<u16> = vec![0; LCD_PIXELS];
+    let mut housekeep_chunks: u32 = 0;
     let (mut work_busy, mut work_frames) = (Duration::ZERO, 0u64);
     let report_frames = RATE as u64 * REPORT_EVERY.as_millis() as u64 / 1000;
 
@@ -486,6 +536,11 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
                 }
                 Cmd::Flush(reply) => flushes.push(PendingFlush { reply, since: Instant::now() }),
                 Cmd::Record(t) => tap = t,
+                Cmd::PinPrime(prime) => {
+                    if let Some(pin) = on_pin.as_mut() {
+                        pin(prime);
+                    }
+                }
             }
         }
         while let Ok(e) = midi.try_recv() {
@@ -498,9 +553,12 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
         let fill = RING - out.slots();
         let Some(rr) = r.as_mut().filter(|r| !r.m.halted) else {
             // nothing to run: silence, so the output's clock and ours stay together
-            while out.slots() > 0 && RING - out.slots() < lead {
-                let _ = out.push([0.0, 0.0]);
-                made += 1;
+            let want = lead.saturating_sub(fill).min(out.slots());
+            if want > 0 {
+                if let Ok(chunk) = out.write_chunk_uninit(want) {
+                    let written = chunk.fill_from_iter(std::iter::repeat([0.0f32, 0.0]).take(want));
+                    made += written as u64;
+                }
             }
             due.retain(|e| e.frame > made);
             for f in flushes.drain(..) {
@@ -517,9 +575,11 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
             continue;
         };
 
-        if fill >= lead {
+        let now = if fill >= lead {
             let surplus_us = (fill - lead) as u64 * 1_000_000 / RATE as u64;
             std::thread::sleep(Duration::from_micros((surplus_us / 2).clamp(250, 2_000)));
+            housekeep_chunks = 0;
+            Some(Instant::now())
         } else {
             while due.front().is_some_and(|e| e.frame <= made) {
                 let e = due.pop_front().unwrap();
@@ -528,10 +588,15 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
                 }
                 midi_in += e.bytes.len() as u64;
             }
-            let chunk = if fill < lead / 2 && due.front().is_none_or(|e| e.frame > made + 10) {
-                CHUNK * 2
-            } else {
+            // Scale chunk up when no MIDI event is imminent (~2 ms window) to amortize outer-loop
+            // and JIT entry overhead, pushing harder (80k cycles) when catching up on buffer fill.
+            let midi_soon = due.front().is_some_and(|e| e.frame <= made + 96);
+            let chunk = if midi_soon {
                 CHUNK
+            } else if fill < lead / 2 {
+                CHUNK * 4
+            } else {
+                CHUNK * 2
             };
             let t0 = Instant::now();
             rr.m.run(chunk);
@@ -539,11 +604,13 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
             if throttle > 0.0 {
                 std::thread::sleep(t0.elapsed().mul_f32(throttle));
             }
-            let spent = t0.elapsed();
+            let t1 = Instant::now();
+            let spent = t1.duration_since(t0);
             busy += spent;
             let a = std::mem::take(&mut rr.m.soc.periph.audio);
             work_busy += spent;
-            work_frames += (a.len() / 2) as u64;
+            let n_frames = a.len() / 2;
+            work_frames += n_frames as u64;
             if work_frames >= report_frames {
                 if let Some(report) = report.as_mut() {
                     report(
@@ -557,21 +624,35 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
             if let Some(t) = tap.as_mut() {
                 t.push(&a);
             }
-            for f in a.chunks_exact(2) {
-                let frame = [f[0] as f32 / 32768.0, f[1] as f32 / 32768.0];
-                peak[0] = peak[0].max(frame[0].abs());
-                peak[1] = peak[1].max(frame[1].abs());
-                clip |= f[0] == i16::MAX || f[0] == i16::MIN || f[1] == i16::MAX || f[1] == i16::MIN;
-                if out.push(frame).is_ok() {
-                    made += 1;
+            let to_write = out.slots().min(n_frames);
+            if to_write > 0 {
+                if let Ok(chunk) = out.write_chunk_uninit(to_write) {
+                    let written = chunk.fill_from_iter(a.chunks_exact(2).take(to_write).map(|f| {
+                        let frame = [f[0] as f32 / 32768.0, f[1] as f32 / 32768.0];
+                        peak[0] = peak[0].max(frame[0].abs());
+                        peak[1] = peak[1].max(frame[1].abs());
+                        clip |= f[0] == i16::MAX || f[0] == i16::MIN || f[1] == i16::MAX || f[1] == i16::MIN;
+                        frame
+                    }));
+                    made += written as u64;
                 }
             }
             rr.m.soc.periph.audio = a;
             rr.m.soc.periph.audio.clear();
-        }
+            housekeep_chunks += 1;
+            if housekeep_chunks >= 4 || !flushes.is_empty() {
+                housekeep_chunks = 0;
+                Some(t1)
+            } else {
+                None
+            }
+        };
+
+        let Some(now) = now else {
+            continue;
+        };
 
         // flash: publish the changed sectors once the firmware has stopped writing for a moment
-        let now = Instant::now();
         let rev = rr.m.soc.flash.revision;
         if rev != rr.flash_rev_seen {
             rr.flash_rev_seen = rev;
@@ -596,20 +677,24 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
             }
         });
 
-        if last_view.elapsed() >= Duration::from_millis(16) {
-            last_view = Instant::now();
-            // Compare LCD revision first (O(1)) and only copy pixels when the panel changed.
+        if now.duration_since(last_view) >= Duration::from_millis(16) {
+            last_view = now;
+            // Compare LCD revision first (O(1)) and copy directly into Shared.lcd without holding Shared.view.
             let soc_lcd_rev = rr.m.soc.lcd.revision;
-            let lcd_changed = soc_lcd_rev != rr.lcd_soc_rev;
-            if lcd_changed {
+            let mut new_lcd_rev = None;
+            if soc_lcd_rev != rr.lcd_soc_rev {
                 rr.lcd_soc_rev = soc_lcd_rev;
-                lcd_cache.copy_from_slice(&rr.m.soc.lcd.fb);
+                let mut lcd = shared.lcd.lock().unwrap();
+                lcd.pixels.copy_from_slice(&rr.m.soc.lcd.fb);
+                lcd.rev += 1;
+                let rev = lcd.rev;
+                drop(lcd);
+                shared.lcd_rev.store(rev, Ordering::Release);
+                new_lcd_rev = Some(rev);
             }
             let mut v = shared.view.lock().unwrap();
-            if lcd_changed {
-                v.lcd.copy_from_slice(&lcd_cache);
-                v.lcd_rev += 1;
-                shared.lcd_rev.store(v.lcd_rev, Ordering::Release);
+            if let Some(rev) = new_lcd_rev {
+                v.lcd_rev = rev;
             }
             // LEDs: the firmware multiplexes and PWMs them, so a short window aliases into flicker.
             // Measure over at least 25 ms of emulated time, scale as panel.rs does (a fully lit
@@ -670,7 +755,7 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
                     push_diag(&shared, &mut v, format!("unknown MMIO ({} accesses, sample: {})", unk_len, sample.join(", ")));
                 }
             }
-            if speed_t.elapsed() >= Duration::from_secs(1) {
+            if now.duration_since(speed_t) >= Duration::from_secs(1) {
                 let ms = rr.m.soc.periph.ms();
                 let starved = shared.clock.starved.load(Ordering::Relaxed);
                 if speed_ms > 0 && busy > Duration::ZERO {
@@ -679,7 +764,7 @@ fn run(shared: Arc<Shared>, cmds: mpsc::Receiver<Cmd>, midi: mpsc::Receiver<Midi
                 }
                 v.starved = starved;
                 starved0 = starved;
-                (speed_t, speed_ms, busy) = (Instant::now(), ms.max(1), Duration::ZERO);
+                (speed_t, speed_ms, busy) = (now, ms.max(1), Duration::ZERO);
                 rr.seconds += 1;
                 let slow = rr.seconds > WARMUP_SECONDS && v.speed > 0.0 && v.speed < SLOW_SPEED && v.late > 0;
                 rr.slow = if slow { rr.slow + 1 } else { 0 };
@@ -804,5 +889,61 @@ mod tests {
         c.taken_ns.store(1_000_000_000, Ordering::Relaxed);
         assert_eq!(c.frame_at(2_000_000_000), 1000 + 44_100);
         assert_eq!(c.frame_at(500), 1000);
+    }
+
+    #[test]
+    fn batched_render_handles_partial_starvation_and_resampling() {
+        let (mut prod, cons) = rtrb::RingBuffer::<[f32; 2]>::new(16);
+        let shared = Arc::new(Shared {
+            view: Mutex::new(View::default()),
+            lcd: Mutex::new(LcdFrame::default()),
+            clock: AudioClock::default(),
+            lead: AtomicUsize::new(8),
+            lcd_rev: AtomicU64::new(0),
+            diag_pending: AtomicBool::new(false),
+            background: AtomicBool::new(false),
+            quit: AtomicBool::new(false),
+            throttle: AtomicU32::new(0),
+        });
+        let mut out = AudioOut { ring: cons, shared: shared.clone(), prev: [0.0; 2], next: [0.0; 2], pos: 1.0 };
+
+        // Push 12 frames, consume 8, push 8 more so the ring wraps across the boundary.
+        let chunk = prod.write_chunk_uninit(12).unwrap();
+        chunk.fill_from_iter((0..12).map(|i| [i as f32, -(i as f32)]));
+        let mut buf = vec![99.0f32; 2 * 8];
+        out.render(&mut buf, RATE, 1);
+        assert_eq!(buf[0], 0.0);
+        assert_eq!(buf[1], 0.0);
+        assert_eq!(buf[14], 7.0);
+        assert_eq!(buf[15], -7.0);
+        assert_eq!(shared.clock.starved.load(Ordering::Relaxed), 0);
+
+        let chunk = prod.write_chunk_uninit(8).unwrap();
+        chunk.fill_from_iter((12..20).map(|i| [i as f32, -(i as f32)]));
+        // 12 frames remain in the ring (8..20); request 16 so the final 4 starve to 0.0.
+        let mut buf2 = vec![99.0f32; 2 * 16];
+        out.render(&mut buf2, RATE, 2);
+        assert_eq!(buf2[0], 8.0);
+        assert_eq!(buf2[22], 19.0);
+        assert_eq!(buf2[23], -19.0);
+        assert!(buf2[24..].iter().all(|&s| s == 0.0));
+        assert_eq!(shared.clock.taken.load(Ordering::Relaxed), 20);
+        assert_eq!(shared.clock.starved.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn pin_prime_command_invokes_affinity_callback() {
+        let (tx, rx) = mpsc::channel();
+        let (engine, _out) = Engine::start_with_pin(
+            512,
+            || None,
+            Some(Box::new(move |prime| {
+                let _ = tx.send(prime);
+            })),
+        );
+        engine.send(Cmd::PinPrime(true));
+        engine.send(Cmd::PinPrime(false));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), true);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), false);
     }
 }

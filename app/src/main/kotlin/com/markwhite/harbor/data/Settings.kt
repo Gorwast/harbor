@@ -10,7 +10,13 @@ import kotlinx.serialization.json.Json
 
 enum class KnobGesture { Vertical, Circular, Both, Horizontal }
 enum class KeybedMode { TwoTiers, SingleRow }
-enum class BufferMode { LowLatency, Stable }
+enum class BufferMode { LowLatency, Stable, Balanced }
+enum class RecordingFormat(val label: String, val ext: String, val mime: String, val nativeCode: Int) {
+    Wav16("WAV 16", "wav", "audio/x-wav", 0),
+    Wav24("WAV 24", "wav", "audio/x-wav", 1),
+    Aiff16("AIFF", "aiff", "audio/aiff", 2),
+    M4a("M4A", "m4a", "audio/mp4", 0),
+}
 
 /** App preferences (ui-spec §6.6, §6.7) and per-firmware state, in SharedPreferences. */
 class Settings(context: Context) {
@@ -143,6 +149,18 @@ class Settings(context: Context) {
     private val _bufferMode = flow { BufferMode.entries.getOrElse(prefs.getInt("buffer", 0)) { BufferMode.LowLatency } }
     val bufferMode: StateFlow<BufferMode> = _bufferMode
     fun setBufferMode(v: BufferMode) { prefs.edit { putInt("buffer", v.ordinal) }; _bufferMode.value = v }
+
+    private val _primeCores = flow { prefs.getBoolean("primeCores", false) }
+    val primeCores: StateFlow<Boolean> = _primeCores
+    fun setPrimeCores(v: Boolean) { prefs.edit { putBoolean("primeCores", v) }; _primeCores.value = v }
+
+    private val _recordingFormat = flow { RecordingFormat.entries.getOrElse(prefs.getInt("recordingFormat", 0)) { RecordingFormat.Wav16 } }
+    val recordingFormat: StateFlow<RecordingFormat> = _recordingFormat
+    fun setRecordingFormat(v: RecordingFormat) { prefs.edit { putInt("recordingFormat", v.ordinal) }; _recordingFormat.value = v }
+
+    private val _m4aBitrateKbps = flow { prefs.getInt("m4aBitrateKbps", 192).coerceIn(128, 256) }
+    val m4aBitrateKbps: StateFlow<Int> = _m4aBitrateKbps
+    fun setM4aBitrateKbps(v: Int) { prefs.edit { putInt("m4aBitrateKbps", v) }; _m4aBitrateKbps.value = v }
 
     private val _keepPlayingInBackground = flow { prefs.getBoolean("background", false) }
     val keepPlayingInBackground: StateFlow<Boolean> = _keepPlayingInBackground

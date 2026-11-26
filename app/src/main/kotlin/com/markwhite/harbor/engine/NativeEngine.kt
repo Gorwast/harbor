@@ -28,6 +28,7 @@ object NativeEngine {
     @JvmStatic external fun analog(idx: Int, value: Int)
     @JvmStatic external fun velocity(us: Int)
     @JvmStatic external fun setClock(mhz: Int, auto: Boolean)
+    @JvmStatic external fun setPrimeCores(primeOnly: Boolean)
 
     /** A MIDI source opened; [remap]: channel 0..15 for its channel messages, or -1. */
     @JvmStatic external fun midiOpen(source: Int, remap: Int)
@@ -58,10 +59,10 @@ object NativeEngine {
     @JvmStatic external fun flush(timeoutMs: Int): ByteArray?
 
     /**
-     * Record the firmware's output as a WAV into [fd] (writable and seekable; the engine takes it
-     * and closes it). False if a recording is running already or the file failed.
+     * Record the firmware's output into [fd] (writable and seekable; the engine takes it and
+     * closes it). [format]: 0 = WAV 16-bit, 1 = WAV 24-bit, 2 = AIFF 16-bit.
      */
-    @JvmStatic external fun recordStart(fd: Int): Boolean
+    @JvmStatic external fun recordStart(fd: Int, format: Int = 0): Boolean
     /** Blocks until the file is complete: [frames, dropped frames], or null if nothing was recording or it failed. */
     @JvmStatic external fun recordStop(): LongArray?
 
