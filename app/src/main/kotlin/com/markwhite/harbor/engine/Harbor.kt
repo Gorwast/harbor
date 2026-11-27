@@ -63,7 +63,13 @@ sealed interface HarborEvent {
     data class ClockReduced(val name: String, val mhz: Int) : HarborEvent
     data class Message(val text: String) : HarborEvent
     /** A recording was saved to [Recordings.FOLDER_NAME]. */
-    data class Recorded(val name: String, val uri: android.net.Uri, val seconds: Long) : HarborEvent
+    data class Recorded(
+        val name: String,
+        val uri: android.net.Uri,
+        val seconds: Long,
+        val ext: String = "wav",
+        val mime: String = "audio/x-wav",
+    ) : HarborEvent
 }
 
 /** A recording in progress, written into the shared Music folder as it plays. */
@@ -83,6 +89,7 @@ class Harbor(
     val store: FirmwareStore,
     val saves: SaveStore,
     val settings: Settings,
+    val recordings: Recordings = Recordings(context),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val bootIds = AtomicLong(0)
@@ -103,7 +110,6 @@ class Harbor(
     val master: StateFlow<Int> = _master
     private val _recording = MutableStateFlow<Recording?>(null)
     val recording: StateFlow<Recording?> = _recording
-    private val recordings = Recordings(context)
     private val recordLock = Mutex()
 
     /**
@@ -251,6 +257,7 @@ class Harbor(
             _save.value = if (sectors != null) SaveState.Saved(saves.savedAt(pkg.sha), saves.sectorCount(pkg.sha)) else SaveState.NotSaved
             _phase.value = Phase.Booting
             settings.lastSha = pkg.sha
+            store.markPlayed(pkg.sha)
             NativeEngine.pot(_master.value)
             val mhz = settings.clock(pkg.sha)
             val auto = settings.autoClock(pkg.sha)
@@ -451,17 +458,20 @@ class Harbor(
                             if (m4aUri != null) {
                                 recordings.delete(r.uri)
                                 recordings.publish(m4aUri)
+                                recordings.notifyChanged()
                                 EventLog.i("recorded \"${r.name}.m4a\": ${frames / 44_100} s")
-                                _events.tryEmit(HarborEvent.Recorded(r.name, m4aUri, frames / 44_100))
+                                _events.tryEmit(HarborEvent.Recorded(r.name, m4aUri, frames / 44_100, fmt.ext, fmt.mime))
                             } else {
                                 recordings.publish(r.uri)
+                                recordings.notifyChanged()
                                 EventLog.w("M4A encode failed; kept WAV for \"${r.name}\"")
-                                _events.tryEmit(HarborEvent.Recorded(r.name, r.uri, frames / 44_100))
+                                _events.tryEmit(HarborEvent.Recorded(r.name, r.uri, frames / 44_100, "wav", "audio/x-wav"))
                             }
                         } else {
                             recordings.publish(r.uri)
-                            EventLog.i("recorded \"${r.name}\": ${frames / 44_100} s")
-                            _events.tryEmit(HarborEvent.Recorded(r.name, r.uri, frames / 44_100))
+                            recordings.notifyChanged()
+                            EventLog.i("recorded \"${r.name}.${fmt.ext}\": ${frames / 44_100} s")
+                            _events.tryEmit(HarborEvent.Recorded(r.name, r.uri, frames / 44_100, fmt.ext, fmt.mime))
                         }
                     }
                 }
@@ -506,14 +516,34 @@ class Harbor(
     }
 
     /** A `.fm1save` of the docked firmware (no package for bring-your-own firmware). */
-    suspend fun exportSave(): Pair<String, ByteArray> = withContext(Dispatchers.IO) {
+    suspend fun exportSave(): Pair<String, ByteArray> {
         val d = _docked.value ?: throw IllegalStateException("nothing is docked")
-        flushSave()
-        val sectors = saves.read(d.pkg.sha) ?: ByteArray(0)
-        val includePackage = d.entry?.byo != true
-        val name = d.pkg.title
+        return exportSaveFor(d.pkg)
+    }
+
+    /** Export a `.fm1save` for any kept firmware (flushing live flash first if it is docked). */
+    suspend fun exportSaveFor(pkg: InstalledPackage): Pair<String, ByteArray> = withContext(Dispatchers.IO) {
+        if (_docked.value?.pkg?.sha == pkg.sha) flushSave()
+        val sectors = saves.read(pkg.sha) ?: ByteArray(0)
+        val entry = catalog.byId(pkg.catalogId)
+        val includePackage = entry?.byo != true
+        val name = pkg.title
         val file = name.replace(Regex("[^A-Za-z0-9._-]+"), "_") + ".fm1save"
-        file to NativeEngine.saveEncode(name, store.read(d.pkg.sha), sectors, includePackage)
+        file to NativeEngine.saveEncode(name, store.read(pkg.sha), sectors, includePackage)
+    }
+
+    /** Remove a downloaded/imported firmware, unloading it first if docked, and optionally deleting its save. */
+    suspend fun removePackage(pkg: InstalledPackage, deleteSave: Boolean) = withContext(Dispatchers.IO) {
+        if (_docked.value?.pkg?.sha == pkg.sha) {
+            if (!deleteSave) flushSave()
+            NativeEngine.unload()
+            currentBoot = 0
+            _docked.value = null
+            _phase.value = Phase.Empty
+            _save.value = SaveState.NotSaved
+        }
+        store.remove(pkg.sha)
+        if (deleteSave) saves.reset(pkg.sha)
     }
 
     data class ImportSummary(val name: String, val sectors: Int, val pkg: ByteArray, val sectorBytes: ByteArray, val known: InstalledPackage?)

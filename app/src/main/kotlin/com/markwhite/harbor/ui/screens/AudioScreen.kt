@@ -102,6 +102,9 @@ fun AudioScreen(app: HarborApp, ui: UiState, onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = Tokens.dim,
             )
+            OutlinedButton(onClick = { ui.go(com.markwhite.harbor.ui.Screen.Recordings) }) {
+                Text("Browse recordings")
+            }
         }
 
         Section("Emulation") {

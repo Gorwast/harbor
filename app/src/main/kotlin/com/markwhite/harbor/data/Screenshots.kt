@@ -35,6 +35,16 @@ class Screenshots(context: Context) {
     /** The image if it is already decoded, for drawing without a frame's delay. */
     fun cached(url: String): ImageBitmap? = memory.get(url)
 
+    /** Total bytes stored in the on-disk screenshot cache. */
+    fun diskBytes(): Long = dir.listFiles()?.sumOf { if (it.isFile) it.length() else 0L } ?: 0L
+
+    /** Clear decoded memory cache and delete all cached screenshots on disk. */
+    fun clearCache() {
+        memory.evictAll()
+        failedAt.clear()
+        dir.listFiles()?.forEach { it.delete() }
+    }
+
     /** The image at [url], from memory, disk or the network; null when there isn't a usable one. */
     suspend fun load(url: String): ImageBitmap? {
         memory.get(url)?.let { return it }

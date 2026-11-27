@@ -126,6 +126,7 @@ fun SettingsHub(go: (Screen) -> Unit, onBack: () -> Unit) {
                 Triple("MIDI", "Devices, channels, Harbor as a MIDI device", Screen.Midi),
                 Triple("Audio & performance", "Output, buffer, clock, load", Screen.Audio),
                 Triple("Controls & display", "Knobs, keys, haptics, panel finish", Screen.Controls),
+                Triple("Storage & offline data", "Firmwares, flash saves, recordings, cache", Screen.Storage),
                 Triple("Help", "Playing, saving, known limits", Screen.Help),
                 Triple("About & licences", "fm1-emu, firmware authors, open source", Screen.About),
             )
@@ -160,8 +161,8 @@ fun HelpScreen(onBack: () -> Unit) {
             Text("Patches live in the firmware. Use its own SAVE and Harbor keeps everything it writes to flash, per firmware version, automatically.")
         }
         Section("Recording") {
-            Text("The red dot at the top records what the firmware plays, MASTER included, as a WAV file (44.1 kHz, 16-bit, as the FM-1 makes it). " +
-                "Tap the timer to stop. Recordings go to Music/Harbor, where music and file apps find them, and a take carries on if you switch apps.")
+            Text("The red dot at the top records what the firmware plays, MASTER included, at 44.1 kHz stereo (WAV 16/24-bit, AIFF, or M4A in Audio & performance). " +
+                "Tap the timer to stop. Recordings go to Music/Harbor and can be played, renamed, compressed, or shared in Library ▸ Recordings.")
             Text("The panel's own REC button belongs to the firmware: it records into the firmware's sequencer, not audio.", color = Tokens.dim)
         }
         Section("Play from a computer (USB)") {

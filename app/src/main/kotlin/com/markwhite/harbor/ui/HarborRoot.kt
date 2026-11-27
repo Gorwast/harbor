@@ -40,6 +40,7 @@ import com.markwhite.harbor.ui.screens.AudioScreen
 import com.markwhite.harbor.ui.screens.ControlsScreen
 import com.markwhite.harbor.ui.screens.HelpScreen
 import com.markwhite.harbor.ui.screens.LibraryScreen
+import com.markwhite.harbor.ui.screens.LibraryTab
 import com.markwhite.harbor.ui.screens.MidiScreen
 import com.markwhite.harbor.ui.screens.Onboarding
 import com.markwhite.harbor.ui.screens.SavesScreen
@@ -48,7 +49,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
-enum class Screen { Play, Library, Saves, Midi, Audio, Controls, Help, About, Settings }
+enum class Screen { Play, Library, Recordings, Storage, Saves, Midi, Audio, Controls, Help, About, Settings }
 
 /** What every screen reads, gathered from the app's flows once per recomposition. */
 data class UiState(
@@ -154,9 +155,9 @@ fun HarborRoot(app: HarborApp, pending: PendingOpen?, onPendingHandled: () -> Un
                 }
                 is HarborEvent.Message -> snackbar.showSnackbar(e.text)
                 is HarborEvent.Recorded -> {
-                    val r = snackbar.showSnackbar("Saved “${e.name}” to ${com.markwhite.harbor.data.Recordings.FOLDER_NAME}.", actionLabel = "Share",
+                    val r = snackbar.showSnackbar("Saved “${e.name}.${e.ext}” to ${com.markwhite.harbor.data.Recordings.FOLDER_NAME}.", actionLabel = "Share",
                         withDismissAction = true, duration = androidx.compose.material3.SnackbarDuration.Long)
-                    if (r == SnackbarResult.ActionPerformed) shareRecording(context, e.uri, e.name)
+                    if (r == SnackbarResult.ActionPerformed) shareRecording(context, e.uri, e.name, e.ext, e.mime)
                 }
             }
         }
@@ -193,7 +194,7 @@ fun HarborRoot(app: HarborApp, pending: PendingOpen?, onPendingHandled: () -> Un
                 HarborRail(
                     when (current) {
                         Screen.Play -> Dest.Play
-                        Screen.Library -> Dest.Library
+                        Screen.Library, Screen.Recordings, Screen.Storage -> Dest.Library
                         Screen.Saves -> Dest.Saves
                         Screen.Midi -> Dest.Midi
                         else -> Dest.Settings
@@ -211,7 +212,9 @@ fun HarborRoot(app: HarborApp, pending: PendingOpen?, onPendingHandled: () -> Un
             Box(Modifier.weight(1f)) {
                 when (current) {
                     Screen.Play -> PlayScreen(ui, panel, mode, ::go, performance) { performance = it }
-                    Screen.Library -> LibraryScreen(app, ui, mode, ::back)
+                    Screen.Library -> LibraryScreen(app, ui, mode, initialTab = null, onBack = ::back)
+                    Screen.Recordings -> LibraryScreen(app, ui, mode, initialTab = LibraryTab.Recordings, onBack = ::back)
+                    Screen.Storage -> LibraryScreen(app, ui, mode, initialTab = LibraryTab.Storage, onBack = ::back)
                     Screen.Saves -> SavesScreen(app, ui, ::back)
                     Screen.Midi -> MidiScreen(app, ui, ::back)
                     Screen.Audio -> AudioScreen(app, ui, ::back)
@@ -253,14 +256,15 @@ fun HarborRoot(app: HarborApp, pending: PendingOpen?, onPendingHandled: () -> Un
 
 /** A `.fwsc` or `.fm1save` opened from another app. */
 /** The system share sheet for a recording (the receiving app is granted read access to it). */
-private fun shareRecording(context: android.content.Context, uri: android.net.Uri, name: String) {
+private fun shareRecording(context: android.content.Context, uri: android.net.Uri, name: String, ext: String, mime: String) {
+    val filename = "$name.$ext"
     val send = android.content.Intent(android.content.Intent.ACTION_SEND)
-        .setType("audio/x-wav")
+        .setType(mime)
         .putExtra(android.content.Intent.EXTRA_STREAM, uri)
-        .putExtra(android.content.Intent.EXTRA_TITLE, "$name.wav")
+        .putExtra(android.content.Intent.EXTRA_TITLE, filename)
         .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
     // the share sheet's preview names the file from the clip (else it shows the MediaStore id)
-    send.clipData = android.content.ClipData.newUri(context.contentResolver, "$name.wav", uri)
+    send.clipData = android.content.ClipData.newUri(context.contentResolver, filename, uri)
     runCatching { context.startActivity(android.content.Intent.createChooser(send, null)) }
 }
 

@@ -26,9 +26,27 @@ data class InstalledPackage(
     val size: Long,
     val addedAt: Long,
     val url: String? = null,
+    val lastPlayedAt: Long = 0L,
+    val favorite: Boolean = false,
+    val note: String = "",
 ) {
     val title: String get() = if (version.isBlank()) name else "$name $version"
+    val lastUsedAt: Long get() = maxOf(lastPlayedAt, addedAt)
 }
+
+enum class LocalSort(val label: String) {
+    Recent("Recently played"),
+    NameAZ("A–Z"),
+    Size("Largest"),
+    Added("Recently added"),
+}
+
+data class DownloadProgress(
+    val entryId: String,
+    val name: String,
+    val got: Long,
+    val total: Long,
+)
 
 class PackageException(message: String) : Exception(message)
 
@@ -39,6 +57,8 @@ class FirmwareStore(context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
     private val _installed = MutableStateFlow(loadIndex())
     val installed: StateFlow<List<InstalledPackage>> = _installed
+    private val _downloading = MutableStateFlow<Map<String, DownloadProgress>>(emptyMap())
+    val downloading: StateFlow<Map<String, DownloadProgress>> = _downloading
 
     private fun loadIndex(): List<InstalledPackage> = runCatching {
         json.decodeFromString(ListSerializer(InstalledPackage.serializer()), index.readText())
@@ -74,6 +94,24 @@ class FirmwareStore(context: Context) {
             }
         }
 
+    /** Download [entry] for offline use without docking or interrupting the running synth. */
+    suspend fun downloadForOffline(entry: FirmwareEntry): Result<InstalledPackage> {
+        if (_downloading.value.containsKey(entry.id)) {
+            return Result.failure(PackageException("${entry.name} is already downloading"))
+        }
+        _downloading.value = _downloading.value + (entry.id to DownloadProgress(entry.id, entry.title, 0, -1))
+        return try {
+            val pkg = download(entry) { got, total ->
+                _downloading.value = _downloading.value + (entry.id to DownloadProgress(entry.id, entry.title, got, total))
+            }
+            Result.success(pkg)
+        } catch (e: Exception) {
+            Result.failure(e)
+        } finally {
+            _downloading.value = _downloading.value - entry.id
+        }
+    }
+
     private fun fetch(entry: FirmwareEntry, url: String, expected: String?, progress: (Long, Long) -> Unit): InstalledPackage {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             setRequestProperty("User-Agent", Catalog.USER_AGENT)
@@ -104,6 +142,7 @@ class FirmwareStore(context: Context) {
     }
 
     /** Keep a package the user opened (or downloaded), after checking it unpacks for the FM-1. */
+    @Synchronized
     fun add(bytes: ByteArray, catalogId: String, name: String, version: String = "", url: String? = null): InstalledPackage {
         if (bytes.size > MAX_PACKAGE) throw PackageException("the package is too large")
         val board = try {
@@ -122,6 +161,29 @@ class FirmwareStore(context: Context) {
         return pkg
     }
 
+    @Synchronized
+    fun markPlayed(sha: String, at: Long = System.currentTimeMillis()) {
+        val current = _installed.value
+        if (current.none { it.sha == sha }) return
+        saveIndex(current.map { if (it.sha == sha) it.copy(lastPlayedAt = at) else it })
+    }
+
+    @Synchronized
+    fun setFavorite(sha: String, favorite: Boolean) {
+        val current = _installed.value
+        if (current.none { it.sha == sha }) return
+        saveIndex(current.map { if (it.sha == sha) it.copy(favorite = favorite) else it })
+    }
+
+    @Synchronized
+    fun setNote(sha: String, note: String) {
+        val current = _installed.value
+        if (current.none { it.sha == sha }) return
+        val clean = note.trim().take(240)
+        saveIndex(current.map { if (it.sha == sha) it.copy(note = clean) else it })
+    }
+
+    @Synchronized
     fun remove(sha: String) {
         File(dir, "$sha.fwsc").delete()
         saveIndex(_installed.value.filterNot { it.sha == sha })
@@ -129,11 +191,66 @@ class FirmwareStore(context: Context) {
 
     fun totalBytes(): Long = _installed.value.sumOf { it.size }
 
+    /** Older kept versions of catalog firmwares when a newer version is also installed. */
+    fun supersededVersions(): List<InstalledPackage> = supersededVersionsOf(_installed.value)
+
+    /** Non-favourite, non-protected packages not played or added since [cutoffMs]. */
+    fun unusedSince(cutoffMs: Long, protectedShas: Set<String> = emptySet()): List<InstalledPackage> =
+        unusedSinceOf(_installed.value, cutoffMs, protectedShas)
+
     companion object {
         const val MAX_PACKAGE = 8L shl 20
         const val SMK_REFUSED = "This is an SMK-37 firmware. SMK-37 support is coming in a later version of Harbor."
 
         fun sha256(bytes: ByteArray): String =
             MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+        fun supersededVersionsOf(packages: List<InstalledPackage>): List<InstalledPackage> =
+            packages
+                .filter { it.catalogId != "local" }
+                .groupBy { it.catalogId }
+                .values
+                .filter { it.size > 1 }
+                .flatMap { group -> group.sortedByDescending { it.addedAt }.drop(1) }
+
+        fun unusedSinceOf(
+            packages: List<InstalledPackage>,
+            cutoffMs: Long,
+            protectedShas: Set<String> = emptySet(),
+        ): List<InstalledPackage> = packages.filter {
+            !it.favorite && it.sha !in protectedShas && it.lastUsedAt < cutoffMs
+        }
+
+        fun sortAndFilterOnDevice(
+            packages: List<InstalledPackage>,
+            sort: LocalSort,
+            query: String,
+            entryOf: (String) -> FirmwareEntry? = { null },
+        ): List<InstalledPackage> {
+            val q = query.trim().lowercase()
+            val filtered = if (q.isEmpty()) packages else packages.filter { pkg ->
+                val e = entryOf(pkg.catalogId)
+                pkg.title.lowercase().contains(q) ||
+                    pkg.note.lowercase().contains(q) ||
+                    (e?.author?.lowercase()?.contains(q) == true) ||
+                    (e?.about?.lowercase()?.contains(q) == true)
+            }
+            val comparator = when (sort) {
+                LocalSort.Recent -> compareByDescending<InstalledPackage> { it.favorite }
+                    .thenByDescending { it.lastPlayedAt }
+                    .thenByDescending { it.addedAt }
+                    .thenBy { it.name.lowercase() }
+                LocalSort.NameAZ -> compareByDescending<InstalledPackage> { it.favorite }
+                    .thenBy { it.name.lowercase() }
+                    .thenByDescending { it.addedAt }
+                LocalSort.Size -> compareByDescending<InstalledPackage> { it.favorite }
+                    .thenByDescending { it.size }
+                    .thenBy { it.name.lowercase() }
+                LocalSort.Added -> compareByDescending<InstalledPackage> { it.favorite }
+                    .thenByDescending { it.addedAt }
+                    .thenBy { it.name.lowercase() }
+            }
+            return filtered.sortedWith(comparator)
+        }
     }
 }

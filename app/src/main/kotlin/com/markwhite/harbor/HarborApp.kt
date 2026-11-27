@@ -7,6 +7,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.markwhite.harbor.data.Catalog
 import com.markwhite.harbor.data.FirmwareStore
+import com.markwhite.harbor.data.Recordings
 import com.markwhite.harbor.data.SaveStore
 import com.markwhite.harbor.data.Screenshots
 import com.markwhite.harbor.data.Settings
@@ -24,6 +25,8 @@ class HarborApp : Application() {
     lateinit var store: FirmwareStore
         private set
     lateinit var saves: SaveStore
+        private set
+    lateinit var recordings: Recordings
         private set
     lateinit var harbor: Harbor
         private set
@@ -44,7 +47,8 @@ class HarborApp : Application() {
         catalog = Catalog(this)
         store = FirmwareStore(this)
         saves = SaveStore(this)
-        harbor = Harbor(this, catalog, store, saves, settings)
+        recordings = Recordings(this)
+        harbor = Harbor(this, catalog, store, saves, settings, recordings)
         midi = MidiHub(this, settings)
         screenshots = Screenshots(this)
         harbor.recoverRecordings()

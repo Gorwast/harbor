@@ -290,6 +290,22 @@ engineering milestones and risks.
     `0.97×` @ 100 MHz, `1.10×` @ 80 MHz, `1.69×` @ 60 MHz (up from `0.35×` @ 240 MHz / `0.48×` @ 120 MHz
     in the 2026-11-17 baseline); `--pin prime` (`cpu6..7`): `0.76×` @ 240 MHz, `0.92×` @ 120 MHz,
     `1.64×` @ 60 MHz.
+- [x] Offline Library, Recordings Browser & Storage Manager (2026-11-26):
+  - `FirmwareStore.kt`: extended `InstalledPackage` (`lastPlayedAt`, `favorite`, `note`, backwards-compatible
+    defaults), added offline background download (`downloadForOffline` + `downloading` progress flow),
+    `supersededVersions()` / `unusedSince()` helpers, and `sortAndFilterOnDevice`.
+  - `SaveStore.kt`, `Screenshots.kt`, `StorageSummary.kt`: added flash-save byte accounting & orphan
+    detection, screenshot/share cache size & clearing, `computeStorageSummary`, `exportAllSavesZip`,
+    and `isOnline` connectivity check (`ACCESS_NETWORK_STATE`).
+  - `Recordings.kt`, `RecordingPlayer.kt`: zero-permission MediaStore browser for `Music/Harbor/`
+    with WAV 16/24 header inspection, rename, single/batch share (real MIME/extension), 16/24-bit
+    WAV → M4A compression, and in-app playback (`MediaPlayer` + `AudioTrack` AIFF fallback with
+    automatic synth pause/resume).
+  - `LibraryScreen.kt`, `RecordingsTab.kt`, `StorageTab.kt`, `PlayScreen.kt`, `HarborRoot.kt`:
+    upgraded `Library` to a 4-tab hub (`On device`, `Catalog`, `Recordings`, `Storage`), added
+    long-press Quick-Switch on the Play title, safe keep-save vs. delete-save firmware removal,
+    direct shortcuts in `OverflowMenu` / `AudioScreen` / `SettingsHub`, and unit tests in
+    `LibraryStorageTest.kt`.
 
 ---
 

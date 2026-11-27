@@ -45,7 +45,9 @@ import com.markwhite.harbor.ui.panel.PanelLeds
 import com.markwhite.harbor.ui.panel.caseBody
 import com.markwhite.harbor.ui.panel.tray
 import com.markwhite.harbor.ui.theme.Display
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -161,12 +163,66 @@ fun StatusChips(ui: UiState, go: (Screen) -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FirmwareTitle(ui: UiState, go: (Screen) -> Unit, modifier: Modifier = Modifier) {
-    Row(modifier.clip(RoundedCornerShape(8.dp)).clickable { go(Screen.Library) }.padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        Text(ui.title, style = Display, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-        Icon(Icons.Filled.ArrowDropDown, "Choose firmware")
+    val app = LocalContext.current.applicationContext as HarborApp
+    val installed by app.store.installed.collectAsState()
+    var quickSwitch by remember { mutableStateOf(false) }
+    val recent = remember(installed) {
+        com.markwhite.harbor.data.FirmwareStore.sortAndFilterOnDevice(
+            installed,
+            com.markwhite.harbor.data.LocalSort.Recent,
+            "",
+        ).take(6)
+    }
+    Box(modifier) {
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .combinedClickable(
+                    onClick = { go(Screen.Library) },
+                    onLongClick = { if (recent.isNotEmpty()) quickSwitch = true else go(Screen.Library) },
+                )
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(ui.title, style = Display, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            Icon(Icons.Filled.ArrowDropDown, "Choose firmware")
+        }
+        DropdownMenu(
+            expanded = quickSwitch,
+            onDismissRequest = { quickSwitch = false },
+            shape = RoundedCornerShape(16.dp),
+            containerColor = Color(0xFF232427),
+            border = BorderStroke(1.dp, Tokens.line.copy(alpha = 0.7f)),
+        ) {
+            for (pkg in recent) {
+                val active = ui.docked?.pkg?.sha == pkg.sha
+                val prefix = buildString {
+                    if (active) append("● ")
+                    if (pkg.favorite) append("★ ")
+                }
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            prefix + pkg.title,
+                            color = if (active) Tokens.amberHi else Tokens.ink,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    onClick = {
+                        quickSwitch = false
+                        if (!active) app.harbor.boot(pkg)
+                    },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("Open full Library…", color = Tokens.dim) },
+                onClick = { quickSwitch = false; go(Screen.Library) },
+            )
+        }
     }
 }
 
@@ -184,7 +240,7 @@ fun OverflowMenu(
             expanded = open, onDismissRequest = { open = false }, shape = RoundedCornerShape(16.dp), containerColor = Color(0xFF232427),
             border = BorderStroke(1.dp, Tokens.line.copy(alpha = 0.7f)),
         ) {
-            for ((label, s) in listOf("Library" to Screen.Library, "Saves & backup" to Screen.Saves)) {
+            for ((label, s) in listOf("Library" to Screen.Library, "Recordings" to Screen.Recordings, "Saves & backup" to Screen.Saves)) {
                 DropdownMenuItem(text = { Text(label) }, onClick = { open = false; go(s) })
             }
             if (onPanelColors != null) DropdownMenuItem(text = { Text("Panel colours…") }, onClick = { open = false; onPanelColors() })
